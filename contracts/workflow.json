@@ -1,0 +1,497 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "workflow.json",
+  "title": "OpenSwarm Workflow Specification",
+  "description": "DAG of agent steps. Kernel executes this. Supports checkpointing, retry-with-mutation, and compensation.",
+  "type": "object",
+  "required": ["workflow_id", "version", "created_at", "status", "steps"],
+  "properties": {
+    "workflow_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9-]{36}$"
+    },
+    "parent_workflow_id": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9-]{36}$",
+      "description": "For sub-workflows spawned by handoff actions"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "submitted",
+        "running",
+        "paused",
+        "completed",
+        "failed",
+        "cancelled",
+        "recovering"
+      ],
+      "default": "draft"
+    },
+    "trigger": {
+      "$ref": "#/definitions/trigger"
+    },
+    "owner_agent": {
+      "type": "string",
+      "description": "agent_id of the orchestrator responsible for this workflow"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/step"
+      }
+    },
+    "data_flow": {
+      "$ref": "#/definitions/data_flow"
+    },
+    "error_handling": {
+      "$ref": "#/definitions/error_handling"
+    },
+    "checkpoint": {
+      "$ref": "#/definitions/checkpoint"
+    },
+    "parallelism": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 1
+    }
+  },
+  "definitions": {
+    "trigger": {
+      "type": "object",
+      "oneOf": [
+        {
+          "$ref": "#/definitions/manual_trigger"
+        },
+        {
+          "$ref": "#/definitions/scheduled_trigger"
+        },
+        {
+          "$ref": "#/definitions/event_trigger"
+        },
+        {
+          "$ref": "#/definitions/webhook_trigger"
+        }
+      ]
+    },
+    "manual_trigger": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "manual"
+        },
+        "initiator": {
+          "type": "string"
+        }
+      }
+    },
+    "scheduled_trigger": {
+      "type": "object",
+      "required": ["type", "cron"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "scheduled"
+        },
+        "cron": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string",
+          "default": "UTC"
+        }
+      }
+    },
+    "event_trigger": {
+      "type": "object",
+      "required": ["type", "event_type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "event"
+        },
+        "event_type": {
+          "type": "string"
+        },
+        "filter": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "webhook_trigger": {
+      "type": "object",
+      "required": ["type", "path"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "webhook"
+        },
+        "path": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "enum": ["GET", "POST", "PUT", "PATCH"],
+          "default": "POST"
+        },
+        "auth": {
+          "type": "string",
+          "enum": ["none", "bearer", "signature"]
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "required": ["step_id", "name", "agent_id", "action"],
+      "properties": {
+        "step_id": {
+          "type": "string",
+          "pattern": "^step_[a-z0-9_]+$"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "agent_id": {
+          "type": "string",
+          "description": "Which agent executes this"
+        },
+        "action": {
+          "$ref": "#/definitions/action"
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "step_ids that must complete before this starts"
+        },
+        "timeout": {
+          "type": "integer",
+          "minimum": 1000,
+          "description": "Max execution time in ms"
+        },
+        "retry": {
+          "$ref": "#/definitions/retry_config"
+        },
+        "continue_on_error": {
+          "type": "boolean",
+          "default": false
+        },
+        "output_mapping": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Maps step outputs to workflow variables: {var_name: 'output_key'}"
+        },
+        "model_override": {
+          "type": ["string", "null"],
+          "description": "Override agent's default model for this step"
+        },
+        "thinking_loop_override": {
+          "type": ["string", "null"],
+          "description": "Override agent's default loop for this step"
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "oneOf": [
+        {
+          "$ref": "#/definitions/inference_action"
+        },
+        {
+          "$ref": "#/definitions/tool_action"
+        },
+        {
+          "$ref": "#/definitions/choice_action"
+        },
+        {
+          "$ref": "#/definitions/handoff_action"
+        },
+        {
+          "$ref": "#/definitions/spawn_action"
+        }
+      ]
+    },
+    "inference_action": {
+      "type": "object",
+      "required": ["type", "prompt"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "inference"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "expected_output": {
+          "type": "string",
+          "enum": ["text", "json", "data", "file"]
+        },
+        "preamble_overrides": {
+          "type": "object",
+          "description": "Override preamble settings for this step only"
+        }
+      }
+    },
+    "tool_action": {
+      "type": "object",
+      "required": ["type", "tool_name"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "tool"
+        },
+        "tool_name": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "wait_for_output": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "choice_action": {
+      "type": "object",
+      "required": ["type", "options"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "choice"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "next_step"],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "condition": {
+                "type": "string",
+                "description": "JMESPath expression evaluating to boolean"
+              },
+              "next_step": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "default_step": {
+          "type": "string"
+        }
+      }
+    },
+    "handoff_action": {
+      "type": "object",
+      "required": ["type", "target_agent"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "handoff"
+        },
+        "target_agent": {
+          "type": "string"
+        },
+        "context": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "wait_for_result": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "spawn_action": {
+      "type": "object",
+      "required": ["type", "manifest_delta"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "spawn"
+        },
+        "manifest_delta": {
+          "type": "object",
+          "description": "Partial manifest to create a new agent instance mid-workflow"
+        },
+        "inject_into_step": {
+          "type": "string",
+          "description": "step_id that will use the spawned agent"
+        }
+      }
+    },
+    "retry_config": {
+      "type": "object",
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "backoff": {
+          "type": "string",
+          "enum": ["none", "linear", "exponential"],
+          "default": "exponential"
+        },
+        "initial_delay_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1000
+        },
+        "max_delay_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "default": 60000
+        },
+        "retry_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Error codes to retry on"
+        },
+        "mutate_on_retry": {
+          "type": "object",
+          "description": "How to change agent config on retry (self-healing)",
+          "properties": {
+            "model_upgrade": {
+              "type": "boolean",
+              "default": false
+            },
+            "loop_upgrade": {
+              "type": "boolean",
+              "default": false
+            },
+            "spawn_fresh": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        }
+      }
+    },
+    "data_flow": {
+      "type": "object",
+      "properties": {
+        "variables": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string",
+                "description": "step_id.output_key or 'workflow.input.x'"
+              },
+              "default": {}
+            }
+          }
+        },
+        "output_schema": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "error_handling": {
+      "type": "object",
+      "properties": {
+        "on_failure": {
+          "type": "string",
+          "enum": ["stop", "continue", "rollback", "compensate"],
+          "default": "stop"
+        },
+        "fallback_steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Steps to run on failure"
+        },
+        "compensation_steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Steps to undo partial work"
+        },
+        "error_threshold": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Max consecutive errors before global stop"
+        },
+        "escalation_target": {
+          "type": "string",
+          "default": "main-agent",
+          "description": "agent_id to notify on unrecoverable failure"
+        }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "description": "Kernel-managed recovery state",
+      "properties": {
+        "last_step_id": {
+          "type": ["string", "null"]
+        },
+        "completed_steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "step_outputs": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "agent_assignments": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "step_id -> agent_instance_id mapping"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

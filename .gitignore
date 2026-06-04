@@ -1,0 +1,26 @@
+# Build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Local data
+data/
+heartbeats/
+*.db
+*.db-wal
+*.db-shm
+.env
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store

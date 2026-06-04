@@ -1,0 +1,465 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "manifest.json",
+  "title": "OpenSwarm Agent Manifest",
+  "description": "Single source of truth for agent identity, capabilities, lifecycle, and runtime config.",
+  "type": "object",
+  "required": [
+    "agent_id",
+    "version",
+    "role",
+    "intent",
+    "capabilities",
+    "lifecycle",
+    "registration_time"
+  ],
+  "properties": {
+    "agent_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "kernel",
+        "orchestrator",
+        "executor",
+        "specialist",
+        "harness",
+        "dashboard",
+        "critic",
+        "meta"
+      ]
+    },
+    "human_readable_name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "intent": {
+      "type": "string",
+      "description": "Single-sentence purpose. Main agent uses this to select agents for workflow steps."
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "coding",
+        "planning",
+        "review",
+        "research",
+        "testing",
+        "deployment",
+        "analysis",
+        "custom"
+      ],
+      "description": "UI grouping and default icon selection"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Searchable labels (e.g. 'python', 'frontend', 'legacy-refactor')"
+    },
+    "registration_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "last_heartbeat": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "initializing",
+        "ready",
+        "busy",
+        "idle",
+        "draining",
+        "offline",
+        "error",
+        "zombie"
+      ],
+      "default": "initializing"
+    },
+    "capabilities": {
+      "$ref": "#/definitions/capabilities"
+    },
+    "permissions": {
+      "$ref": "#/definitions/permissions"
+    },
+    "lifecycle": {
+      "$ref": "#/definitions/lifecycle"
+    },
+    "thinking_profile": {
+      "$ref": "#/definitions/thinking_profile"
+    },
+    "model_tier": {
+      "$ref": "#/definitions/model_tier"
+    },
+    "configuration": {
+      "$ref": "#/definitions/configuration"
+    },
+    "endpoints": {
+      "type": "object",
+      "properties": {
+        "receive": {
+          "type": "string",
+          "format": "uri"
+        },
+        "stream": {
+          "type": "string",
+          "format": "uri"
+        },
+        "events": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "agent_ids this agent requires to be online"
+    },
+    "health_check": {
+      "$ref": "#/definitions/health_check"
+    }
+  },
+  "definitions": {
+    "capabilities": {
+      "type": "object",
+      "required": ["inference", "tools"],
+      "properties": {
+        "inference": {
+          "type": "object",
+          "required": ["provider"],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": ["openai", "anthropic", "ollama", "lmstudio", "custom"]
+            },
+            "models": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Ordered list: [primary, fallback1, fallback2]"
+            },
+            "default_model": {
+              "type": "string"
+            },
+            "max_context_tokens": {
+              "type": "integer"
+            },
+            "supports_streaming": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/tool_definition"
+          }
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "SKILL.md identifiers this agent can load from skills/"
+        },
+        "protocols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["envelope", "stream", "event", "batch"]
+          },
+          "default": ["envelope"]
+        }
+      }
+    },
+    "tool_definition": {
+      "type": "object",
+      "required": ["name", "description"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["string", "number", "boolean", "array", "object"]
+              },
+              "description": {
+                "type": "string"
+              },
+              "required": {
+                "type": "boolean"
+              },
+              "default": {}
+            }
+          }
+        },
+        "returns": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            }
+          }
+        },
+        "side_effects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "file_system": {
+          "$ref": "#/definitions/fs_permission"
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "allow": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "deny": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "process": {
+          "type": "object",
+          "properties": {
+            "can_spawn": {
+              "type": "boolean"
+            },
+            "can_kill": {
+              "type": "boolean"
+            },
+            "max_children": {
+              "type": "integer"
+            }
+          }
+        },
+        "harness": {
+          "type": "object",
+          "properties": {
+            "can_execute_code": {
+              "type": "boolean",
+              "default": false
+            },
+            "can_access_workspace": {
+              "type": "boolean",
+              "default": false
+            },
+            "allowed_runtimes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "e.g. ['python', 'node', 'bash']"
+            }
+          }
+        },
+        "env_vars": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed env var patterns (wildcards ok)"
+        }
+      }
+    },
+    "fs_permission": {
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Glob patterns"
+        },
+        "deny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "read_only": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "description": "How long this agent lives and what happens when it dies.",
+      "required": ["persistence"],
+      "properties": {
+        "persistence": {
+          "type": "string",
+          "enum": ["ephemeral", "session", "persistent"],
+          "description": "ephemeral = dies after one task; session = lives until workflow ends; persistent = survives restarts"
+        },
+        "max_age_minutes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Auto-drain after this time"
+        },
+        "max_tasks": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Auto-drain after N tasks"
+        },
+        "auto_restart": {
+          "type": "boolean",
+          "default": false
+        },
+        "restart_policy": {
+          "type": "string",
+          "enum": ["never", "always", "exponential_backoff", "on_failure_only"],
+          "default": "never"
+        },
+        "max_restarts": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 3
+        }
+      }
+    },
+    "thinking_profile": {
+      "type": "object",
+      "description": "What reasoning patterns this agent can use.",
+      "properties": {
+        "available_loops": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Registered loop IDs (direct, cot, reflection, tree, etc.)"
+        },
+        "default_loop": {
+          "type": "string",
+          "default": "direct"
+        },
+        "allows_dynamic_assembly": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, main agent can send custom loop graphs to this agent"
+        },
+        "trial_error_history": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Past loop configs tried and their scores"
+        }
+      }
+    },
+    "model_tier": {
+      "type": "object",
+      "description": "Model strength assignment for cost/quality tradeoffs.",
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": ["fast", "standard", "powerful"],
+          "default": "standard"
+        },
+        "cost_budget_per_task": {
+          "type": "number",
+          "description": "USD; kernel can downgrade model if exceeded"
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "properties": {
+        "timeouts": {
+          "type": "object",
+          "properties": {
+            "default_inference_ms": {
+              "type": "integer",
+              "minimum": 1000
+            },
+            "max_inference_ms": {
+              "type": "integer",
+              "minimum": 1000
+            },
+            "tool_execution_ms": {
+              "type": "integer",
+              "minimum": 100
+            }
+          }
+        },
+        "memory": {
+          "type": "object",
+          "properties": {
+            "context_window": {
+              "type": "integer",
+              "default": 10
+            },
+            "relevance_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.5
+            }
+          }
+        }
+      }
+    },
+    "health_check": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "format": "uri"
+        },
+        "interval_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5
+        }
+      }
+    }
+  }
+}

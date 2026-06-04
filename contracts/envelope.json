@@ -1,0 +1,470 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "envelope.json",
+  "title": "OpenSwarm Message Envelope",
+  "description": "Universal message envelope. All communication (kernel\u2194agent, agent\u2194agent, agent\u2194harness, dashboard\u2194kernel) uses this exact shape.",
+  "type": "object",
+  "required": [
+    "envelope_id",
+    "created_at",
+    "envelope_type",
+    "sender",
+    "receiver",
+    "preamble",
+    "payload"
+  ],
+  "properties": {
+    "envelope_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9-]{36}$",
+      "description": "UUID v4"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "TTL; kernel may drop expired envelopes"
+    },
+    "envelope_type": {
+      "type": "string",
+      "enum": [
+        "request",
+        "response",
+        "event",
+        "error",
+        "heartbeat",
+        "chunk",
+        "intent"
+      ],
+      "description": "intent = main-agent directive; request/response = agent\u2194agent; event = fire-and-forget; chunk = streaming partial"
+    },
+    "sender": {
+      "$ref": "#/definitions/endpoint"
+    },
+    "receiver": {
+      "$ref": "#/definitions/endpoint"
+    },
+    "reply_to": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9-]{36}$",
+      "description": "envelope_id this replies to"
+    },
+    "preamble": {
+      "$ref": "#/definitions/preamble"
+    },
+    "payload": {
+      "$ref": "#/definitions/payload"
+    },
+    "metadata": {
+      "$ref": "#/definitions/metadata"
+    }
+  },
+  "definitions": {
+    "endpoint": {
+      "type": "object",
+      "required": ["agent_id", "role"],
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "description": "kebab-case identifier"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "kernel",
+            "orchestrator",
+            "executor",
+            "specialist",
+            "harness",
+            "dashboard",
+            "tool",
+            "external"
+          ]
+        },
+        "instance_id": {
+          "type": ["string", "null"],
+          "description": "For stateful agents with multiple instances"
+        }
+      }
+    },
+    "preamble": {
+      "type": "object",
+      "description": "Context prepended before every inference (OpenClaw-style bootstrap). Kernel assembles this from manifest + memory + workflow state.",
+      "required": ["intent", "permissions", "thinking_loop_config"],
+      "properties": {
+        "intent": {
+          "type": "object",
+          "required": ["goal", "phase"],
+          "properties": {
+            "goal": {
+              "type": "string"
+            },
+            "phase": {
+              "type": "string",
+              "enum": [
+                "discovery",
+                "planning",
+                "execution",
+                "reflection",
+                "handoff",
+                "recovery"
+              ]
+            },
+            "constraints": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "permissions": {
+          "type": "object",
+          "properties": {
+            "can_read": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "can_write": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "can_execute": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "can_delegate": {
+              "type": "boolean",
+              "default": false
+            },
+            "max_tokens": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "thinking_loop_config": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["fast", "thorough", "memo", "custom"],
+              "default": "thorough"
+            },
+            "loop_id": {
+              "type": ["string", "null"],
+              "description": "Reference to loops/registry.json template"
+            },
+            "custom_graph": {
+              "type": ["object", "null"],
+              "description": "Inline graph for dynamic assembly; overrides loop_id"
+            },
+            "max_iterations": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 10
+            },
+            "stop_conditions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "confidence_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.8
+            }
+          }
+        },
+        "memory_context": {
+          "type": "object",
+          "properties": {
+            "recent_events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/memory_item"
+              }
+            },
+            "relevant_history": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/memory_item"
+              }
+            },
+            "session_state": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "required": ["content_type"],
+      "properties": {
+        "content_type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "tool",
+            "data",
+            "workflow",
+            "checkpoint",
+            "spawn_request"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "content_type": {
+                "const": "text"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/text_payload"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "content_type": {
+                "const": "tool"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/tool_payload"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "content_type": {
+                "const": "data"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/data_payload"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "content_type": {
+                "const": "workflow"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/workflow_payload"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "content_type": {
+                "const": "checkpoint"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/checkpoint_payload"
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "content_type": {
+                "const": "spawn_request"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/spawn_request_payload"
+          }
+        }
+      ]
+    },
+    "text_payload": {
+      "type": "object",
+      "required": ["content"],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string",
+          "enum": ["plain", "markdown", "json", "xml"],
+          "default": "plain"
+        }
+      }
+    },
+    "tool_payload": {
+      "type": "object",
+      "required": ["tool_name", "action"],
+      "properties": {
+        "tool_name": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string",
+          "enum": ["invoke", "stream", "cancel", "status"]
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "streaming": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "data_payload": {
+      "type": "object",
+      "required": ["data"],
+      "properties": {
+        "data": {},
+        "schema": {
+          "type": "string",
+          "description": "Optional schema reference"
+        }
+      }
+    },
+    "workflow_payload": {
+      "type": "object",
+      "required": ["workflow"],
+      "properties": {
+        "workflow": {
+          "type": "object",
+          "description": "Inline workflow object conforming to workflow.json"
+        },
+        "workflow_id": {
+          "type": "string",
+          "pattern": "^[a-f0-9-]{36}$"
+        }
+      }
+    },
+    "checkpoint_payload": {
+      "type": "object",
+      "required": ["workflow_id", "state_blob"],
+      "properties": {
+        "workflow_id": {
+          "type": "string"
+        },
+        "last_step_id": {
+          "type": "string"
+        },
+        "state_blob": {
+          "type": "object",
+          "description": "Opaque checkpoint data"
+        },
+        "agent_outputs": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "spawn_request_payload": {
+      "type": "object",
+      "required": ["manifest_delta"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "description": "Why main agent is spawning/replacing"
+        },
+        "manifest_delta": {
+          "type": "object",
+          "description": "Partial manifest overrides (e.g. different model, loop)"
+        },
+        "base_manifest_id": {
+          "type": "string",
+          "description": "Agent to clone from"
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "trace_id": {
+          "type": "string"
+        },
+        "span_id": {
+          "type": "string"
+        },
+        "content_hash": {
+          "type": "string",
+          "description": "SHA-256 of payload"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "default": 5
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "model_routing": {
+          "type": "object",
+          "properties": {
+            "tier": {
+              "type": "string",
+              "enum": ["fast", "standard", "powerful"]
+            },
+            "requested_model": {
+              "type": ["string", "null"]
+            },
+            "fallback_models": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "memory_item": {
+      "type": "object",
+      "required": ["timestamp", "type", "content"],
+      "properties": {
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["action", "result", "decision", "error", "context"]
+        },
+        "content": {},
+        "relevance_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}
