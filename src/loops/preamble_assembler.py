@@ -1,105 +1,44 @@
-"""Preamble assembler - builds full context for LLM calls."""
+"""Preamble assembly — Phase 3 sync surface preserved, Phase 6 async surface added.
 
-from typing import Any
+This module used to be the entire preamble assembler.  In Phase 6
+the real work moved to :mod:`memory.context_assembler`, which has
+the :class:`ContextAssembler` and :class:`PreambleAssembler` class
+implementations.  This file is now a thin shim that:
 
+* re-exports ``assemble`` and ``assemble_minimal`` so the Phase 3
+  callers (the in-process :mod:`agents` worker, the existing tests)
+  keep working unchanged;
+* exposes :class:`PreambleAssembler` (the new async class) at the
+  loops-package level so agent code can ``from loops import
+  PreambleAssembler`` and use it.
 
-def assemble(preamble: dict[str, Any], manifest: dict[str, Any]) -> str:
-    """Assemble the full context from preamble and manifest.
+The new code should depend on the ``memory`` package directly.  The
+``loops`` package keeps the legacy function-shaped surface because
+that's what the rest of the agent worker and the Phase 3 tests
+already import.
+"""
+from __future__ import annotations
 
-    Inspired by OpenClaw's CLAUDE.md + skills + history assembly.
+from memory.context_assembler import (
+    ContextAssembler,
+    PermissionOverrideError,
+    PreambleAssembler,
+    assemble,
+    assemble_minimal,
+    render_preamble,
+)
 
-    Args:
-        preamble: The task preamble (intent, permissions, thinking_loop_config, memory_context).
-        manifest: The agent manifest.
+# ``PreambleAssembler.assemble_sync`` is the dict-shaped legacy entry
+# point.  Re-export as ``assemble_from_dicts`` for clarity in callers
+# that want to be explicit.
+assemble_from_dicts = PreambleAssembler.assemble_sync
 
-    Returns:
-        Formatted context string for LLM.
-    """
-    parts = []
-
-    # Role section
-    role = manifest.get("role", "executor")
-    intent = manifest.get("intent", "")
-    agent_id = manifest.get("agent_id", "unknown")
-
-    parts.append(f"# ROLE\nYou are {agent_id}, a {role}. {intent}")
-
-    # Permissions section
-    permissions = preamble.get("permissions", {})
-    parts.append(f"# PERMISSIONS")
-    if "can_read" in permissions:
-        parts.append(f"Read: {permissions['can_read']}")
-    if "can_write" in permissions:
-        parts.append(f"Write: {permissions['can_write']}")
-    if "can_execute" in permissions:
-        parts.append(f"Execute: {permissions['can_execute']}")
-    if "can_delegate" in permissions:
-        parts.append(f"Delegate: {permissions['can_delegate']}")
-
-    # Thinking loop configuration
-    loop_config = preamble.get("thinking_loop_config", {})
-    if loop_config:
-        parts.append(f"\n# THINKING LOOP")
-        if "mode" in loop_config:
-            parts.append(f"Mode: {loop_config['mode']}")
-        if "max_iterations" in loop_config:
-            parts.append(f"Max iterations: {loop_config['max_iterations']}")
-        if "confidence_threshold" in loop_config:
-            parts.append(f"Confidence threshold: {loop_config['confidence_threshold']}")
-
-    # Memory context
-    memory_context = preamble.get("memory_context", {})
-    if memory_context:
-        parts.append(f"\n# MEMORY")
-
-        recent_events = memory_context.get("recent_events", [])
-        if recent_events:
-            parts.append(f"Recent events:")
-            for event in recent_events[-5:]:  # Last 5 events
-                event_type = event.get("type", "unknown")
-                timestamp = event.get("timestamp", "")
-                parts.append(f"  - [{timestamp}] {event_type}")
-
-        relevant_history = memory_context.get("relevant_history", [])
-        if relevant_history:
-            parts.append(f"\nRelevant history:")
-            for item in relevant_history[:3]:  # Top 3
-                content = item.get("content", "")
-                if isinstance(content, dict):
-                    content = str(content)[:100]
-                parts.append(f"  - {content[:100]}")
-
-        session_state = memory_context.get("session_state", {})
-        if session_state:
-            parts.append(f"\nSession state: {session_state.get('workflow_id', 'unknown')}")
-
-    # Intent from preamble
-    intent_info = preamble.get("intent", {})
-    if intent_info:
-        parts.append(f"\n# TASK")
-        if "goal" in intent_info:
-            parts.append(f"Goal: {intent_info['goal']}")
-        if "phase" in intent_info:
-            parts.append(f"Phase: {intent_info['phase']}")
-        if "constraints" in intent_info:
-            parts.append(f"Constraints: {', '.join(intent_info['constraints'])}")
-
-    return "\n".join(parts)
-
-
-def assemble_minimal(task: str, intent: str = "") -> str:
-    """Assemble a minimal context for simple tasks.
-
-    Args:
-        task: The task content.
-        intent: Optional intent description.
-
-    Returns:
-        Minimal context string.
-    """
-    parts = []
-    parts.append("# TASK")
-    if intent:
-        parts.append(f"Intent: {intent}")
-    parts.append(f"Task: {task}")
-    return "\n".join(parts)
+__all__ = [
+    "ContextAssembler",
+    "PermissionOverrideError",
+    "PreambleAssembler",
+    "assemble",
+    "assemble_from_dicts",
+    "assemble_minimal",
+    "render_preamble",
+]

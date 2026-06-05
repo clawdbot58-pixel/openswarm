@@ -1,7 +1,9 @@
 """Loop registry - SQLite-backed template store."""
 
+import asyncio
 import json
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -47,53 +49,72 @@ class LoopRegistry:
         else:
             self._db_path = db_path
 
-        self._conn: sqlite3.Connection | None = None
+        # Each thread gets its own connection (sqlite3 connections are
+        # not safe to share across threads).  ``threading.local`` holds
+        # a per-thread ``sqlite3.Connection`` so sync and
+        # ``asyncio.to_thread`` callers can coexist.
+        self._tls = threading.local()
+        # Schema init is per-process, guarded by this lock; the first
+        # connection on each thread re-runs the (idempotent) ``CREATE
+        # TABLE IF NOT EXISTS`` statements.
+        self._init_lock = threading.Lock()
+        # Apply the schema on the current thread so single-threaded
+        # callers (and tests) see a working DB right away.
         self._init_db()
 
     def _init_db(self) -> None:
-        """Initialize database schema."""
-        with self._get_conn() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS loop_templates (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    description TEXT,
-                    graph_json TEXT NOT NULL,
-                    task_type TEXT,
-                    success_rate REAL DEFAULT 0.0,
-                    avg_score REAL DEFAULT 0.0,
-                    avg_cost_usd REAL DEFAULT 0.0,
-                    avg_latency_ms REAL DEFAULT 0.0,
-                    usage_count INTEGER DEFAULT 0,
-                    created_at TEXT,
-                    updated_at TEXT,
-                    is_premade BOOLEAN DEFAULT FALSE
-                )
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_task_type
-                ON loop_templates(task_type)
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_success_rate
-                ON loop_templates(success_rate DESC)
-            """)
+        """Apply schema to the current thread's connection.
+
+        Delegates to :meth:`_get_conn`, which is thread-safe.
+        """
+        with self._get_conn():
+            pass
 
     @contextmanager
     def _get_conn(self) -> Generator[sqlite3.Connection, None, None]:
-        """Get a database connection.
+        """Get a database connection, opening one per thread if needed.
 
         Yields:
             SQLite connection.
         """
-        if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path)
-            self._conn.row_factory = sqlite3.Row
+        conn = getattr(self._tls, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self._db_path)
+            conn.row_factory = sqlite3.Row
+            self._tls.conn = conn
+            # First connection on this thread — apply the schema.
+            with self._init_lock:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS loop_templates (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        description TEXT,
+                        graph_json TEXT NOT NULL,
+                        task_type TEXT,
+                        success_rate REAL DEFAULT 0.0,
+                        avg_score REAL DEFAULT 0.0,
+                        avg_cost_usd REAL DEFAULT 0.0,
+                        avg_latency_ms REAL DEFAULT 0.0,
+                        usage_count INTEGER DEFAULT 0,
+                        created_at TEXT,
+                        updated_at TEXT,
+                        is_premade BOOLEAN DEFAULT FALSE
+                    )
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_task_type
+                    ON loop_templates(task_type)
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_success_rate
+                    ON loop_templates(success_rate DESC)
+                """)
+                conn.commit()
 
         try:
-            yield self._conn
+            yield conn
         finally:
-            self._conn.commit()
+            conn.commit()
 
     def register_template(
         self,
@@ -404,6 +425,66 @@ class LoopRegistry:
         with self._get_conn() as conn:
             row = conn.execute("SELECT COUNT(*) as count FROM loop_templates").fetchone()
             return row["count"] if row else 0
+
+    # -- async wrappers ----------------------------------------------------
+    #
+    # Phase 6 callers (ContextAssembler, MemoryRouter) need an async
+    # surface so they can ``await`` without blocking the event loop.  The
+    # underlying ``sqlite3`` connection is sync, so each async method
+    # just delegates to the sync implementation via ``asyncio.to_thread``.
+    # The wrappers are intentionally thin — no extra logic, no caching.
+
+    async def aget_template(self, template_id: str) -> LoopGraph | None:
+        """Async wrapper around :meth:`get_template`."""
+        return await asyncio.to_thread(self.get_template, template_id)
+
+    async def alist_templates(
+        self,
+        task_type: str | None = None,
+        min_success_rate: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """Async wrapper around :meth:`list_templates`."""
+        return await asyncio.to_thread(
+            self.list_templates,
+            task_type,
+            min_success_rate,
+        )
+
+    async def aupdate_stats(
+        self,
+        template_id: str,
+        score: float,
+        cost: float,
+        latency: float,
+        success: bool = True,
+    ) -> None:
+        """Async wrapper around :meth:`update_stats`."""
+        await asyncio.to_thread(
+            self.update_stats,
+            template_id,
+            score,
+            cost,
+            latency,
+            success,
+        )
+
+    async def aget_recommendation(
+        self,
+        task_type: str,
+        budget_usd: float | None = None,
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Async wrapper around :meth:`get_recommendation`."""
+        return await asyncio.to_thread(
+            self.get_recommendation,
+            task_type,
+            budget_usd,
+            limit,
+        )
+
+    async def acount(self) -> int:
+        """Async wrapper around :meth:`count`."""
+        return await asyncio.to_thread(self.count)
 
 
 def create_registry(db_path: str | None = None) -> LoopRegistry:

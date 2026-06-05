@@ -75,7 +75,7 @@ Communication rules (absolute, see `vision/architecture.md`):
 
 ## Project Status
 
-Phases 0–5 are complete and tested. Phases 6–11 are planned.
+Phases 0–6 are complete and tested. Phases 7–11 are planned.
 
 | Phase | Name | Status |
 |------:|------|:------:|
@@ -85,7 +85,7 @@ Phases 0–5 are complete and tested. Phases 6–11 are planned.
 | 3 | Generic Agent Worker + Model Router with fallback chain | ✅ |
 | 4 | Thinking Loops — primitives, premade loops, dynamic assembly, scoring | ✅ |
 | 5 | Coding Harness — workspace, sandboxed executor, git tracker, diff streaming | ✅ |
-| 6 | Memory & Context Assembly | ⏳ |
+| 6 | Memory & Context Assembly — temporary + persistent stores, skill loader, preamble assembler | ✅ |
 | 7 | Dashboard Backend (event stream) | ⏳ |
 | 8 | Dashboard Frontend (React, workflow DAG) | ⏳ |
 | 9 | Self-Healing & Workflow Recovery | ⏳ |
@@ -322,6 +322,111 @@ See `src/loops/`.
 
 ---
 
+## Memory & Context Assembly (Phase 6)
+
+Every inference call gets a fully-rendered **preamble** — context
+the kernel prepends to the system prompt. Phase 6 wires together
+the moving parts that produce it:
+
+```
+                    ┌─────────────────────────────┐
+                    │     AgentManifest           │  static identity
+                    │   (role, perms, skills)     │
+                    └────────────┬────────────────┘
+                                 │
+                                 ▼
+   ┌────────────┐   ┌────────────────────────┐   ┌────────────┐
+   │  Skill     │ + │   ContextAssembler     │ + │  Loop      │
+   │  Loader    │   │   (build Preamble)     │   │  Registry  │
+   └────────────┘   └────────────┬───────────┘   └────────────┘
+                                 │
+   ┌────────────┐                │
+   │  Temporary │ ───────────────┤  recent_events
+   │  Memory    │                │  session_state
+   │  (per-     │                │
+   │   agent,   │                │
+   │   TTL)     │                │
+   └────────────┘                │
+                                 │
+   ┌────────────┐                │
+   │ Persistent │ ───────────────┤  relevant_history
+   │  Memory    │                │  (FTS5 keyword search)
+   │  (SQLite + │                │
+   │   FTS5)    │                │
+   └────────────┘                │
+                                 ▼
+                    ┌────────────────────────────┐
+                    │   Preamble (Pydantic)      │  matches
+                    │   = contract for the LLM   │  envelope.json
+                    └────────────┬───────────────┘
+                                 │
+                                 ▼
+                    ┌────────────────────────────┐
+                    │   PreambleAssembler        │
+                    │   (render as markdown)     │
+                    └────────────────────────────┘
+```
+
+The two memory channels are intentionally complementary:
+
+* **TemporaryMemory** — in-process, per-agent, TTL-based, no SQLite.
+  Holds working state and recent events for the current session.
+  Default 30-minute TTL, soft cap of 10k entries with oldest-first
+  eviction.
+* **PersistentMemory** — SQLite + FTS5, cross-session, cross-process.
+  Full-text search over `content` and `tags`; rows carry
+  `agent_id`, `workflow_id`, and `step_id` for audit.
+  Keyword search only — vector search is a Phase 11 concern.
+
+The **`ContextAssembler`** enforces the Phase 6 invariants:
+
+* `recent_events` is capped at `manifest.configuration.memory.context_window`.
+* `relevant_history` is FTS5 keyword-matched against the current task
+  and filtered by `manifest.configuration.memory.relevance_threshold`.
+* Permission overrides (per-call) must be a **subset** of the
+  manifest's permissions; the assembler raises
+  `PermissionOverrideError` otherwise.
+* If a `LoopRegistry` is wired in and the manifest has a
+  `category`, the registry's top-ranked template for that
+  category wins over the manifest's `default_loop`.
+
+The **`MemoryRouter`** is the kernel-side dispatcher for
+`memory_write` envelopes. It validates the payload, routes to
+the right store, and returns an acknowledgement envelope with
+the new `memory_id` (or `None` for temporary writes).
+
+The **`SkillLoader`** reads `skills/{id}/SKILL.md` files. The
+first `#` heading is the title; the rest is the body. The loader
+refuses skill ids that smell like path traversal (`..`, `/`).
+
+### Quick Example
+
+```python
+from memory.context_assembler import ContextAssembler, PreambleAssembler
+from memory.persistent import PersistentMemory
+from memory.skill_loader import SkillLoader
+from memory.temporary import TemporaryMemory
+
+temp = TemporaryMemory("test-agent")
+persistent = PersistentMemory("data/memory.db")
+await persistent.initialize()
+
+ca = ContextAssembler(
+    temp,
+    persistent,
+    skill_loader=SkillLoader("skills"),
+)
+pa = PreambleAssembler(ca)
+
+# Once per inference call:
+preamble = await ca.assemble(manifest, "what's next?")
+prompt = render_preamble(preamble, manifest)
+```
+
+See `src/memory/`.
+
+---
+
 ## Security Model
 
 The kernel is a **default-deny** permission enforcer:
@@ -422,7 +527,7 @@ Two hard rules from `vision/phases.md`:
    visible output). Tests catch correctness; demos catch "this is a
    science project."
 
-Tests are not optional. The current bar is **467/467 passing** — new
+Tests are not optional. The current bar is **560/560 passing** — new
 work that drops a test gets fixed or reverted, not merged around.
 
 ---

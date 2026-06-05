@@ -18,7 +18,13 @@ from .model_router import (
     ModelRouter,
 )
 from .optimizer import CriticScore, LoopOptimizer, LoopRecommendation
-from .preamble_assembler import assemble, assemble_minimal
+from .preamble_assembler import (
+    ContextAssembler,
+    PermissionOverrideError,
+    PreambleAssembler,
+    assemble,
+    assemble_minimal,
+)
 from .primitives import (
     BranchPrimitive,
     CritiquePrimitive,
@@ -66,6 +72,9 @@ __all__ = [
     "Primitive",
     "PrimitiveContext",
     "PrimitiveResult",
+    "ContextAssembler",
+    "PermissionOverrideError",
+    "PreambleAssembler",
     "assemble",
     "assemble_minimal",
     "BranchPrimitive",
