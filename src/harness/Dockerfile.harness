@@ -1,0 +1,35 @@
+FROM python:3.11-slim
+
+# ---------------------------------------------------------------------------
+# OpenSwarm Harness - base image for sandboxed code execution.
+# ---------------------------------------------------------------------------
+# Every user code path inside the harness runs as an unprivileged
+# user, in a container with a read-only root filesystem, no network,
+# and dropped capabilities.  The image is intentionally minimal so the
+# attack surface is small.
+
+# 1. Install minimal system dependencies.
+#    `git` is required for the in-container git operations the agent
+#    workers occasionally perform (e.g. computing diffs locally).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Create the unprivileged user the harness runs as.  No password,
+#    no sudo, no supplementary groups.
+RUN useradd --create-home --shell /bin/bash --uid 1000 openswarm
+
+# 3. Workspace mount point.  The harness binds the workflow's
+#    workspace here at run time.
+WORKDIR /workspace
+
+# 4. Drop privileges.  ``USER`` does not survive ``docker run -u``
+#    overrides, but it sets the default.
+USER openswarm:openswarm
+
+# 5. Default command.  The harness always passes an explicit command
+#    (``python3 file.py``, ``node file.js``, ``bash file.sh``) so the
+#    default is only used for debugging.
+CMD ["/bin/bash"]

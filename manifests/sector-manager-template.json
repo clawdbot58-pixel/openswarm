@@ -1,0 +1,154 @@
+{
+  "agent_id": "sector-manager-coding",
+  "version": "0.1.0",
+  "role": "specialist",
+  "human_readable_name": "Sector Manager (coding)",
+  "description": "Template for a sector manager agent. Each instance is stamped with a sector name (e.g. sector-manager-coding, sector-manager-testing). Manages workers in its sector, aggregates results, reports to the conductor. NEVER talks to the user.",
+  "intent": "Manage a domain sector: delegate to workers, aggregate results, report to conductor",
+  "category": "custom",
+  "tags": [
+    "sector-manager",
+    "specialist",
+    "template",
+    "phase-2"
+  ],
+  "registration_time": "2026-06-04T00:00:00Z",
+  "status": "ready",
+  "capabilities": {
+    "inference": {
+      "provider": "custom",
+      "models": [
+        "anthropic/claude-3.5-sonnet",
+        "openai/gpt-4o",
+        "anthropic/claude-3.5-haiku"
+      ],
+      "default_model": "anthropic/claude-3.5-sonnet",
+      "max_context_tokens": 64000,
+      "supports_streaming": true
+    },
+    "tools": [
+      {
+        "name": "messaging.send",
+        "description": "Send an envelope to another registered agent via the kernel.",
+        "parameters": {
+          "receiver_id": {
+            "type": "string",
+            "description": "Kebab-case agent_id of the recipient.",
+            "required": true
+          },
+          "payload": {
+            "type": "object",
+            "description": "Envelope payload object.",
+            "required": true
+          }
+        },
+        "returns": {
+          "type": "object",
+          "description": "Send receipt with envelope_id."
+        },
+        "side_effects": []
+      },
+      {
+        "name": "fs.read",
+        "description": "Read a file from the sector's workspace.",
+        "parameters": {
+          "path": {
+            "type": "string",
+            "description": "Absolute path to the file to read.",
+            "required": true
+          }
+        },
+        "returns": {
+          "type": "string",
+          "description": "File contents."
+        },
+        "side_effects": [
+          "fs:read"
+        ]
+      }
+    ],
+    "skills": [
+      "task-decomposition",
+      "result-aggregation",
+      "cross-sector-coordination"
+    ],
+    "protocols": [
+      "envelope",
+      "event"
+    ]
+  },
+  "permissions": {
+    "file_system": {
+      "allow": [
+        "workspaces/sector-*/**"
+      ],
+      "deny": [
+        "**/.git/**",
+        "**/secrets/**"
+      ],
+      "read_only": false
+    },
+    "network": {
+      "allow": [],
+      "deny": []
+    },
+    "process": {
+      "can_spawn": false,
+      "can_kill": false,
+      "max_children": 8
+    },
+    "harness": {
+      "can_execute_code": false,
+      "can_access_workspace": true,
+      "allowed_runtimes": []
+    },
+    "env_vars": []
+  },
+  "lifecycle": {
+    "persistence": "session",
+    "max_age_minutes": 120,
+    "max_tasks": 50,
+    "auto_restart": false,
+    "restart_policy": "never",
+    "max_restarts": 0
+  },
+  "thinking_profile": {
+    "available_loops": [
+      "direct",
+      "cot",
+      "reflection"
+    ],
+    "default_loop": "cot",
+    "allows_dynamic_assembly": true,
+    "trial_error_history": []
+  },
+  "model_tier": {
+    "tier": "standard",
+    "cost_budget_per_task": 0.10
+  },
+  "configuration": {
+    "timeouts": {
+      "default_inference_ms": 20000,
+      "max_inference_ms": 120000,
+      "tool_execution_ms": 5000
+    },
+    "memory": {
+      "context_window": 20,
+      "relevance_threshold": 0.5
+    }
+  },
+  "endpoints": {
+    "receive": "ws://127.0.0.1:8765/ws",
+    "stream": "ws://127.0.0.1:8765/ws",
+    "events": "ws://127.0.0.1:8765/ws"
+  },
+  "dependencies": [
+    "kernel",
+    "conductor"
+  ],
+  "health_check": {
+    "endpoint": "http://127.0.0.1:8765/health",
+    "interval_seconds": 20,
+    "timeout_seconds": 5
+  }
+}

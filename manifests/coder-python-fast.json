@@ -1,0 +1,103 @@
+{
+  "agent_id": "coder-python-fast",
+  "version": "1.0.0",
+  "role": "executor",
+  "human_readable_name": "Fast Python Coder",
+  "description": "Writes and refactors Python code quickly",
+  "intent": "Write and refactor Python code",
+  "category": "coding",
+  "tags": ["python", "fast", "coding"],
+  "registration_time": "2026-01-01T00:00:00Z",
+  "status": "ready",
+  "capabilities": {
+    "inference": {
+      "provider": "openai",
+      "models": ["gpt-4o-mini", "gpt-4o"],
+      "default_model": "gpt-4o-mini",
+      "max_context_tokens": 128000,
+      "supports_streaming": true
+    },
+    "tools": [
+      {
+        "name": "file_write",
+        "description": "Write content to a file",
+        "parameters": {
+          "path": {"type": "string", "description": "File path", "required": true},
+          "content": {"type": "string", "description": "File content", "required": true}
+        }
+      },
+      {
+        "name": "file_read",
+        "description": "Read content from a file",
+        "parameters": {
+          "path": {"type": "string", "description": "File path", "required": true}
+        }
+      },
+      {
+        "name": "shell_exec",
+        "description": "Execute a shell command",
+        "parameters": {
+          "command": {"type": "string", "description": "Command to execute", "required": true}
+        }
+      }
+    ],
+    "skills": ["python-coding"],
+    "protocols": ["envelope"]
+  },
+  "permissions": {
+    "file_system": {
+      "allow": ["/workspace/*"],
+      "deny": [],
+      "read_only": false
+    },
+    "network": {
+      "allow": [],
+      "deny": []
+    },
+    "process": {
+      "can_spawn": false,
+      "can_kill": false,
+      "max_children": 0
+    },
+    "harness": {
+      "can_execute_code": true,
+      "can_access_workspace": true,
+      "allowed_runtimes": ["python"]
+    },
+    "env_vars": ["PATH", "HOME"]
+  },
+  "lifecycle": {
+    "persistence": "ephemeral",
+    "max_age_minutes": 60,
+    "max_tasks": 1,
+    "auto_restart": false,
+    "restart_policy": "never",
+    "max_restarts": 0
+  },
+  "thinking_profile": {
+    "available_loops": ["direct", "cot", "reflection"],
+    "default_loop": "direct",
+    "allows_dynamic_assembly": false,
+    "trial_error_history": []
+  },
+  "model_tier": {
+    "tier": "fast",
+    "cost_budget_per_task": 0.05
+  },
+  "configuration": {
+    "timeouts": {
+      "default_inference_ms": 30000,
+      "max_inference_ms": 60000,
+      "tool_execution_ms": 30000
+    },
+    "memory": {
+      "context_window": 10,
+      "relevance_threshold": 0.5
+    }
+  },
+  "health_check": {
+    "endpoint": null,
+    "interval_seconds": 30,
+    "timeout_seconds": 5
+  }
+}

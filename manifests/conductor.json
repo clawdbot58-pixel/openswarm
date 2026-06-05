@@ -1,0 +1,108 @@
+{
+  "agent_id": "conductor",
+  "version": "0.1.0",
+  "role": "orchestrator",
+  "human_readable_name": "Conductor",
+  "description": "Workflow orchestrator. Receives structured objectives from the Main Agent, decomposes them into workflow DAGs, spawns sector managers, and handles failure events. NEVER talks to the user, NEVER executes tools, NEVER writes files.",
+  "intent": "Decompose objectives into workflows, manage sector managers, handle failures",
+  "category": "planning",
+  "tags": [
+    "orchestrator",
+    "workflow",
+    "sector-manager",
+    "phase-2"
+  ],
+  "registration_time": "2026-06-04T00:00:00Z",
+  "status": "ready",
+  "capabilities": {
+    "inference": {
+      "provider": "custom",
+      "models": [
+        "anthropic/claude-3.5-sonnet",
+        "openai/gpt-4o",
+        "anthropic/claude-3.5-haiku"
+      ],
+      "default_model": "anthropic/claude-3.5-sonnet",
+      "max_context_tokens": 64000,
+      "supports_streaming": true
+    },
+    "tools": [],
+    "skills": [
+      "workflow-decomposition",
+      "failure-recovery"
+    ],
+    "protocols": [
+      "envelope",
+      "event"
+    ]
+  },
+  "permissions": {
+    "file_system": {
+      "allow": [],
+      "deny": [],
+      "read_only": true
+    },
+    "network": {
+      "allow": [],
+      "deny": []
+    },
+    "process": {
+      "can_spawn": false,
+      "can_kill": false,
+      "max_children": 0
+    },
+    "harness": {
+      "can_execute_code": false,
+      "can_access_workspace": false,
+      "allowed_runtimes": []
+    },
+    "env_vars": []
+  },
+  "lifecycle": {
+    "persistence": "persistent",
+    "max_age_minutes": null,
+    "max_tasks": null,
+    "auto_restart": true,
+    "restart_policy": "always",
+    "max_restarts": 5
+  },
+  "thinking_profile": {
+    "available_loops": [
+      "direct",
+      "cot",
+      "reflection"
+    ],
+    "default_loop": "cot",
+    "allows_dynamic_assembly": true,
+    "trial_error_history": []
+  },
+  "model_tier": {
+    "tier": "standard",
+    "cost_budget_per_task": 0.10
+  },
+  "configuration": {
+    "timeouts": {
+      "default_inference_ms": 15000,
+      "max_inference_ms": 60000,
+      "tool_execution_ms": 1000
+    },
+    "memory": {
+      "context_window": 20,
+      "relevance_threshold": 0.5
+    }
+  },
+  "endpoints": {
+    "receive": "ws://127.0.0.1:8765/ws",
+    "stream": "ws://127.0.0.1:8765/ws",
+    "events": "ws://127.0.0.1:8765/ws"
+  },
+  "dependencies": [
+    "kernel",
+    "main-agent"
+  ],
+  "health_check": {
+    "endpoint": "http://127.0.0.1:8765/health",
+    "interval_seconds": 15,
+    "timeout_seconds": 5
+  }
+}

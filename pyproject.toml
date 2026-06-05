@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+# pytest-asyncio: every test that is a coroutine is treated as an
+# async test.  This is the modern, recommended setting; subpackage
+# conftests no longer need to register the plugin or mark tests by
+# hand.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+# Make the test runner skip the demo-only paths under src/ that are
+# not part of the test tree.
+testpaths = [
+    "src",
+]

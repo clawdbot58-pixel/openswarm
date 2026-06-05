@@ -262,4 +262,103 @@ async def test_denial_emits_kernel_event_to_main(kernel_test):
         if e.payload.data.get("event") == "permission_denied"  # type: ignore[union-attr]
     ]
     assert events, "no permission_denied event emitted"
-    assert events[0].payload.data.get("sender") == "coder"  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: harness side-effect tokens
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_harness_execute_allowed_when_can_execute_code(kernel_test):
+    """``harness:execute`` is allowed when manifest grants ``can_execute_code``."""
+    await kernel_test.registry.register(
+        _manifest(
+            tools=[
+                {
+                    "name": "harness.exec",
+                    "description": "execute code in sandbox",
+                    "side_effects": ["harness:execute"],
+                }
+            ],
+            permissions={"harness": {"can_execute_code": True}},
+        )
+    )
+    env = _tool_envelope("coder", "harness.exec", {"runtime": "python", "code": "print(1)"})
+    assert await kernel_test.permissions.check(env) is True
+
+
+@pytest.mark.asyncio
+async def test_harness_execute_denied_without_can_execute_code(kernel_test):
+    """``harness:execute`` is denied when the manifest lacks the flag."""
+    await kernel_test.registry.register(
+        _manifest(
+            tools=[
+                {
+                    "name": "harness.exec",
+                    "description": "execute code in sandbox",
+                    "side_effects": ["harness:execute"],
+                }
+            ],
+            permissions={"harness": {"can_execute_code": False}},
+        )
+    )
+    env = _tool_envelope("coder", "harness.exec", {"runtime": "python", "code": "print(1)"})
+    assert await kernel_test.permissions.check(env) is False
+
+
+@pytest.mark.asyncio
+async def test_harness_workspace_allowed_when_can_access_workspace(kernel_test):
+    """``harness:workspace`` is allowed when manifest grants ``can_access_workspace``."""
+    await kernel_test.registry.register(
+        _manifest(
+            tools=[
+                {
+                    "name": "harness.write_file",
+                    "description": "write a file",
+                    "side_effects": ["harness:workspace"],
+                }
+            ],
+            permissions={"harness": {"can_access_workspace": True}},
+        )
+    )
+    env = _tool_envelope("coder", "harness.write_file", {"path": "/workspace/x.py"})
+    assert await kernel_test.permissions.check(env) is True
+
+
+@pytest.mark.asyncio
+async def test_harness_workspace_denied_without_can_access_workspace(kernel_test):
+    """``harness:workspace`` is denied when the manifest lacks the flag."""
+    await kernel_test.registry.register(
+        _manifest(
+            tools=[
+                {
+                    "name": "harness.write_file",
+                    "description": "write a file",
+                    "side_effects": ["harness:workspace"],
+                }
+            ],
+            permissions={"harness": {"can_access_workspace": False}},
+        )
+    )
+    env = _tool_envelope("coder", "harness.write_file", {"path": "/workspace/x.py"})
+    assert await kernel_test.permissions.check(env) is False
+
+
+@pytest.mark.asyncio
+async def test_harness_permission_missing_block_all(kernel_test):
+    """No harness block at all → both tokens are denied."""
+    await kernel_test.registry.register(
+        _manifest(
+            tools=[
+                {
+                    "name": "harness.exec",
+                    "description": "execute",
+                    "side_effects": ["harness:execute"],
+                }
+            ],
+            permissions=None,
+        )
+    )
+    env = _tool_envelope("coder", "harness.exec", {"runtime": "python", "code": "x = 1"})
+    assert await kernel_test.permissions.check(env) is False

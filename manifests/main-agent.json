@@ -1,0 +1,105 @@
+{
+  "agent_id": "main-agent",
+  "version": "0.1.0",
+  "role": "orchestrator",
+  "human_readable_name": "Main Agent",
+  "description": "The user-facing orchestrator. Translates user goals into structured objectives and reports progress. Spawns the conductor and the initial swarm. NEVER executes tools, NEVER writes files, NEVER spawns workers directly.",
+  "intent": "Translate user goals into structured swarm objectives and report progress",
+  "category": "planning",
+  "tags": [
+    "orchestrator",
+    "user-facing",
+    "planning",
+    "phase-2"
+  ],
+  "registration_time": "2026-06-04T00:00:00Z",
+  "status": "ready",
+  "capabilities": {
+    "inference": {
+      "provider": "custom",
+      "models": [
+        "anthropic/claude-3.5-haiku",
+        "openai/gpt-4o-mini",
+        "meta-llama/llama-3.1-8b-instruct"
+      ],
+      "default_model": "anthropic/claude-3.5-haiku",
+      "max_context_tokens": 32000,
+      "supports_streaming": true
+    },
+    "tools": [],
+    "skills": [
+      "objective-translation",
+      "status-summarisation"
+    ],
+    "protocols": [
+      "envelope",
+      "event"
+    ]
+  },
+  "permissions": {
+    "file_system": {
+      "allow": [],
+      "deny": [],
+      "read_only": true
+    },
+    "network": {
+      "allow": [],
+      "deny": []
+    },
+    "process": {
+      "can_spawn": false,
+      "can_kill": false,
+      "max_children": 0
+    },
+    "harness": {
+      "can_execute_code": false,
+      "can_access_workspace": false,
+      "allowed_runtimes": []
+    },
+    "env_vars": []
+  },
+  "lifecycle": {
+    "persistence": "persistent",
+    "max_age_minutes": null,
+    "max_tasks": null,
+    "auto_restart": true,
+    "restart_policy": "always",
+    "max_restarts": 5
+  },
+  "thinking_profile": {
+    "available_loops": [
+      "direct"
+    ],
+    "default_loop": "direct",
+    "allows_dynamic_assembly": false,
+    "trial_error_history": []
+  },
+  "model_tier": {
+    "tier": "fast",
+    "cost_budget_per_task": 0.01
+  },
+  "configuration": {
+    "timeouts": {
+      "default_inference_ms": 5000,
+      "max_inference_ms": 30000,
+      "tool_execution_ms": 1000
+    },
+    "memory": {
+      "context_window": 12,
+      "relevance_threshold": 0.5
+    }
+  },
+  "endpoints": {
+    "receive": "ws://127.0.0.1:8765/ws",
+    "stream": "ws://127.0.0.1:8765/ws",
+    "events": "ws://127.0.0.1:8765/ws"
+  },
+  "dependencies": [
+    "kernel"
+  ],
+  "health_check": {
+    "endpoint": "http://127.0.0.1:8765/health",
+    "interval_seconds": 15,
+    "timeout_seconds": 5
+  }
+}

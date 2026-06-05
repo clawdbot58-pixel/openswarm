@@ -8,7 +8,6 @@ helper for sending envelopes.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
 import tempfile
@@ -39,17 +38,10 @@ from kernel.permissions import PermissionEnforcer  # noqa: E402
 from kernel.registry import AgentRegistry  # noqa: E402
 
 
-# pytest-asyncio configuration: each async test gets its own loop.
-pytest_plugins = ["pytest_asyncio"]
-
-
-def pytest_collection_modifyitems(config, items):
-    """Mark async test functions for pytest-asyncio."""
-    for item in items:
-        if "asyncio" in item.keywords:
-            continue
-        if asyncio.iscoroutinefunction(getattr(item, "function", None)):
-            item.add_marker(pytest.mark.asyncio)
+# ``asyncio_mode = "auto"`` is set in the top-level ``pyproject.toml``,
+# so async tests and ``@pytest_asyncio.fixture`` decorators work
+# without registering ``pytest_asyncio`` here (forbidden by pytest 8+
+# in non-top-level conftest files).
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,95 @@
+{
+  "agent_id": "reviewer-security-powerful",
+  "version": "1.0.0",
+  "role": "specialist",
+  "human_readable_name": "Security Reviewer",
+  "description": "Reviews code for security vulnerabilities",
+  "intent": "Review code for security vulnerabilities",
+  "category": "review",
+  "tags": ["security", "review", "vulnerabilities"],
+  "registration_time": "2026-01-01T00:00:00Z",
+  "status": "ready",
+  "capabilities": {
+    "inference": {
+      "provider": "anthropic",
+      "models": ["claude-opus-4-20250514", "claude-sonnet-4-20250514"],
+      "default_model": "claude-opus-4-20250514",
+      "max_context_tokens": 200000,
+      "supports_streaming": true
+    },
+    "tools": [
+      {
+        "name": "file_read",
+        "description": "Read content from a file",
+        "parameters": {
+          "path": {"type": "string", "description": "File path", "required": true}
+        }
+      },
+      {
+        "name": "static_analysis",
+        "description": "Run static analysis on code",
+        "parameters": {
+          "paths": {"type": "array", "description": "Files to analyze", "required": true}
+        }
+      }
+    ],
+    "skills": ["security-review", "owasp"],
+    "protocols": ["envelope"]
+  },
+  "permissions": {
+    "file_system": {
+      "allow": ["/workspace/**"],
+      "deny": [],
+      "read_only": true
+    },
+    "network": {
+      "allow": [],
+      "deny": []
+    },
+    "process": {
+      "can_spawn": false,
+      "can_kill": false,
+      "max_children": 0
+    },
+    "harness": {
+      "can_execute_code": false,
+      "can_access_workspace": false,
+      "allowed_runtimes": []
+    },
+    "env_vars": []
+  },
+  "lifecycle": {
+    "persistence": "ephemeral",
+    "max_age_minutes": 30,
+    "max_tasks": 1,
+    "auto_restart": false,
+    "restart_policy": "never",
+    "max_restarts": 0
+  },
+  "thinking_profile": {
+    "available_loops": ["reflection", "debate", "ensemble"],
+    "default_loop": "reflection",
+    "allows_dynamic_assembly": false,
+    "trial_error_history": []
+  },
+  "model_tier": {
+    "tier": "powerful",
+    "cost_budget_per_task": 0.50
+  },
+  "configuration": {
+    "timeouts": {
+      "default_inference_ms": 120000,
+      "max_inference_ms": 180000,
+      "tool_execution_ms": 60000
+    },
+    "memory": {
+      "context_window": 15,
+      "relevance_threshold": 0.7
+    }
+  },
+  "health_check": {
+    "endpoint": null,
+    "interval_seconds": 30,
+    "timeout_seconds": 5
+  }
+}
