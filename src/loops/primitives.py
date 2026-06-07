@@ -1,10 +1,29 @@
-"""Loop primitives - atomic building blocks of reasoning."""
+"""Loop primitives - atomic building blocks of reasoning.
+
+Phase 4 introduced the dataclass/ABC-based :class:`Primitive` hierarchy
+(``GeneratePrimitive`` / ``CritiquePrimitive`` / …).  Phase 10 adds a
+thin Pydantic facade — :class:`LoopPrimitive` / :class:`PrimitiveOutput`
+/ :class:`PrimitiveExecutor` — that the :mod:`src.meta_agent` and
+:mod:`src.loop_optimizer` modules use to think about reasoning as a
+JSON-serialisable graph of named operations.  The two layers coexist
+on purpose: the existing primitives keep their simple dataclass shape
+and the Phase 10 layer wraps them so the meta-agent can build, mutate
+and serialize graphs without touching dataclass internals.
+"""
+
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from enum import Enum
+from typing import Any, TYPE_CHECKING
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from .model_router import LLMClient
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .base_loop import LoopResult
 
 
 @dataclass
@@ -660,3 +679,233 @@ def get_primitive(name: str) -> Primitive:
     if name not in PRIMITIVES:
         raise ValueError(f"Unknown primitive: {name}. Available: {list(PRIMITIVES.keys())}")
     return PRIMITIVES[name]()
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 — Pydantic-style reasoning nodes
+#
+# The Phase 4 dataclass primitives above stay exactly as they are.  The
+# types below give the meta-agent / loop-optimizer a *serialisable*
+# handle on a single reasoning step: a ``LoopPrimitive`` is a JSON-safe
+# description of "do this operation at this temperature with this model
+# override", and ``PrimitiveOutput`` is the standardised result envelope
+# a node always returns.  :class:`PrimitiveExecutor` is the bridge that
+# runs a :class:`LoopPrimitive` against the existing Phase 4
+# implementation, so the meta-agent can stay purely declarative.
+# ---------------------------------------------------------------------------
+
+
+class PrimitiveType(str, Enum):
+    """The atomic reasoning operations a thinking loop can perform.
+
+    Values are stable strings (kept lowercase) so they can be embedded
+    in JSON graph descriptions without translation.  The enum is a
+    ``str`` subclass so ``PrimitiveType.GENERATE == "generate"`` and the
+    Phase 4 primitive registry keys line up one-to-one.
+    """
+
+    GENERATE = "generate"
+    CRITIQUE = "critique"
+    VOTE = "vote"
+    REVISE = "revise"
+    BRANCH = "branch"
+    MERGE = "merge"
+
+
+class LoopPrimitive(BaseModel):
+    """A single reasoning primitive node in a loop graph.
+
+    A ``LoopPrimitive`` is a JSON-safe description of one LLM-backed
+    operation.  The :class:`PrimitiveExecutor` knows how to run it
+    against a real :class:`loops.model_router.LLMClient` (or any client
+    exposing the same ``.generate(system, user, json_mode, temperature)``
+    surface).
+
+    Attributes:
+        node_id: Unique identifier within the enclosing graph.
+        primitive: Which operation this node runs.
+        model_override: Optional model name to route this node through.
+        temperature: Sampling temperature for the underlying LLM call.
+        parameters: Per-primitive knobs (``n`` for ``branch``,
+            ``strategy`` for ``merge``, ``rubric`` for ``critique``, etc.).
+    """
+
+    model_config = ConfigDict(extra="forbid", use_enum_values=False)
+
+    node_id: str
+    primitive: PrimitiveType
+    model_override: str | None = None
+    temperature: float = 0.7
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class PrimitiveOutput(BaseModel):
+    """The output envelope every primitive execution returns.
+
+    Mirrors the Phase 4 :class:`loops.primitives.PrimitiveResult` shape
+    but as a Pydantic model so it can be embedded in JSON trial records
+    without an extra ``dataclasses.asdict`` step.
+
+    Attributes:
+        output: The text the primitive produced.
+        score: Optional critic-style score (1.0-10.0) for
+            ``critique``/``vote`` primitives.
+        tokens_used: Total prompt+completion tokens consumed.
+        cost_usd: USD cost of the underlying LLM call(s).
+        latency_ms: Wall-clock duration of the execution in ms.
+        metadata: Arbitrary per-primitive bookkeeping (model used,
+            branch candidates, vote winner, etc.).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    output: str
+    score: float | None = None
+    tokens_used: int = 0
+    cost_usd: float = 0.0
+    latency_ms: float = 0.0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class PrimitiveExecutor:
+    """Execute a :class:`LoopPrimitive` against a real LLM client.
+
+    The executor is a thin orchestrator: it does not contain any
+    reasoning logic of its own, it just maps :class:`LoopPrimitive`
+    values to the right Phase 4 :class:`Primitive` class and threads
+    the inputs through a :class:`PrimitiveContext`.  This keeps the
+    Phase 4 implementation the single source of truth for how each
+    operation actually works.
+
+    Args:
+        model_client: Optional LLM client.  If omitted, callers must
+            pass one to :meth:`execute` (the executor is otherwise
+            stateless and cheap to construct).
+    """
+
+    def __init__(self, model_client: Any | None = None) -> None:
+        self._default_client = model_client
+
+    async def execute(
+        self,
+        primitive: LoopPrimitive,
+        task: str,
+        preamble: dict[str, Any],
+        model_client: Any | None = None,
+    ) -> PrimitiveOutput:
+        """Run a single :class:`LoopPrimitive` and return its output.
+
+        Args:
+            primitive: The node to execute.
+            task: Original user task (forwarded to primitives that
+                render ``{{ task }}`` in their prompt template).
+            preamble: Preamble context (intent, permissions, etc.).
+            model_client: LLM client to use.  Falls back to the one
+                passed to the constructor.
+
+        Returns:
+            A :class:`PrimitiveOutput` with the produced text and
+            accounting metadata.
+
+        Raises:
+            ValueError: If no LLM client is available.
+        """
+        client = model_client or self._default_client
+        if client is None:
+            raise ValueError(
+                "PrimitiveExecutor.execute requires a model_client "
+                "(none passed to __init__ or execute)."
+            )
+
+        impl = get_primitive(primitive.primitive.value)
+        config: dict[str, Any] = dict(primitive.parameters)
+        config.setdefault("temperature", primitive.temperature)
+        if primitive.model_override:
+            config["model"] = primitive.model_override
+
+        context = PrimitiveContext(
+            task=task,
+            model_client=client,
+            system_prompt=_render_system_prompt(preamble),
+            inputs={"prompt": task},
+            config=config,
+            metadata={"node_id": primitive.node_id},
+        )
+        result = await impl.execute(context)
+        return PrimitiveOutput(
+            output=result.output,
+            score=result.score,
+            tokens_used=int(result.tokens_used),
+            cost_usd=float(result.cost_usd),
+            latency_ms=float(result.latency_ms),
+            metadata=dict(result.metadata),
+        )
+
+    def estimate_cost(self, primitive: LoopPrimitive) -> float:
+        """Estimate the relative cost multiplier of a primitive.
+
+        The :class:`loops.assembler.LoopAssembler` and the
+        :class:`src.loop_optimizer.LoopOptimizer` both use this number
+        to short-circuit obviously-too-expensive candidates before
+        spending tokens on them.
+
+        Returns:
+            ``1.0`` for non-parallel primitives.  For ``branch`` it
+            is the configured branch count ``n`` (default 3).  For
+            ``merge`` the merge itself is cheap but the upstream
+            branch cost is already accounted for, so the executor
+            returns ``1.0`` and the caller is expected to roll the
+            branch cost into the total.
+        """
+        if primitive.primitive == PrimitiveType.BRANCH:
+            try:
+                n = int(primitive.parameters.get("n", 3))
+            except (TypeError, ValueError):
+                n = 3
+            return float(max(1, n))
+        return 1.0
+
+
+def _render_system_prompt(preamble: dict[str, Any] | None) -> str:
+    """Render a short system prompt from the preamble.
+
+    Kept inline (rather than calling
+    :func:`loops.preamble_assembler.assemble`) so the executor stays
+    import-cheap: the assembler pulls in ``memory.context_assembler``
+    which is a heavier import graph.
+    """
+    if not preamble:
+        return ""
+    intent = preamble.get("intent", {}) if isinstance(preamble, dict) else {}
+    permissions = preamble.get("permissions", {}) if isinstance(preamble, dict) else {}
+    pieces: list[str] = []
+    if isinstance(intent, dict) and intent.get("goal"):
+        pieces.append(f"# ROLE\nGoal: {intent['goal']}")
+    elif intent:
+        pieces.append(f"# ROLE\nGoal: {intent}")
+    if isinstance(permissions, dict):
+        read = permissions.get("can_read")
+        write = permissions.get("can_write")
+        if read:
+            pieces.append(f"Read: {read}")
+        if write:
+            pieces.append(f"Write: {write}")
+    return "\n".join(pieces)
+
+
+__all__ = [
+    "BranchPrimitive",
+    "CritiquePrimitive",
+    "GeneratePrimitive",
+    "LoopPrimitive",
+    "MergePrimitive",
+    "Primitive",
+    "PrimitiveContext",
+    "PrimitiveExecutor",
+    "PrimitiveOutput",
+    "PrimitiveResult",
+    "PrimitiveType",
+    "RevisePrimitive",
+    "VotePrimitive",
+    "get_primitive",
+]

@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenSwarm Dashboard</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg-0:oklch(0.13 0.008 260);
+  --bg-1:oklch(0.17 0.008 260);
+  --bg-2:oklch(0.22 0.010 260);
+  --bg-3:oklch(0.27 0.010 260);
+  --fg-0:oklch(0.92 0.005 260);
+  --fg-1:oklch(0.72 0.008 260);
+  --fg-2:oklch(0.55 0.010 260);
+  --accent:oklch(0.72 0.14 180);
+  --accent-dim:oklch(0.55 0.08 180);
+  --red:oklch(0.65 0.15 25);
+  --orange:oklch(0.72 0.13 70);
+  --green:oklch(0.65 0.14 150);
+  --blue:oklch(0.65 0.12 250);
+  --purple:oklch(0.65 0.12 310);
+  --radius:6px;
+  --font-mono:'SF Mono','Fira Code','Cascadia Code',monospace;
+  --font-sans:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+}
+html,body{height:100%;background:var(--bg-0);color:var(--fg-0);font-family:var(--font-sans);font-size:14px;line-height:1.5;overflow:hidden}
+#app{display:grid;grid-template-columns:220px 1fr;grid-template-rows:1fr;height:100vh}
+
+aside{background:var(--bg-1);border-right:1px solid oklch(0.25 0.008 260);display:flex;flex-direction:column;padding:0}
+.logo{padding:20px 18px 16px;font-size:13px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent);font-family:var(--font-mono)}
+.logo small{display:block;font-weight:400;font-size:10px;letter-spacing:0.04em;color:var(--fg-2);margin-top:2px}
+nav{flex:1;overflow-y:auto;padding:4px 8px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:var(--radius);cursor:pointer;color:var(--fg-1);font-size:13px;transition:background .12s,border-radius .15s}
+.nav-item:hover{background:var(--bg-2)}
+.nav-item.active{background:var(--bg-3);color:var(--fg-0);font-weight:600}
+.nav-item .icon{width:18px;height:18px;opacity:0.6}
+.nav-item.active .icon{opacity:1}
+.connection-status{padding:12px 18px;border-top:1px solid oklch(0.25 0.008 260);font-size:11px;color:var(--fg-2);font-family:var(--font-mono)}
+.connection-status .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.dot-ok{background:var(--green)}
+.dot-err{background:var(--red)}
+.dot-warn{background:var(--orange)}
+
+main{overflow:auto;padding:24px 28px}
+.view{display:none}
+.view.active{display:block}
+.view-header{margin-bottom:20px}
+.view-header h2{font-size:18px;font-weight:700;color:var(--fg-0);margin-bottom:4px}
+.view-header p{font-size:12px;color:var(--fg-2)}
+
+.metrics-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:20px}
+.metric-card{background:var(--bg-1);border:1px solid oklch(0.25 0.008 260);border-radius:var(--radius);padding:14px 16px}
+.metric-card .label{font-size:11px;color:var(--fg-2);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px}
+.metric-card .value{font-size:22px;font-weight:700;font-family:var(--font-mono);color:var(--fg-0)}
+.metric-card .sub{font-size:11px;color:var(--fg-2);margin-top:2px}
+.metric-card.accent .value{color:var(--accent)}
+.metric-card.red .value{color:var(--red)}
+.metric-card.green .value{color:var(--green)}
+.metric-card.orange .value{color:var(--orange)}
+
+#agent-graph-container{position:relative;width:100%;height:calc(100vh - 180px);min-height:400px;background:var(--bg-1);border:1px solid oklch(0.25 0.008 260);border-radius:var(--radius);overflow:hidden}
+#agent-graph-canvas{width:100%;height:100%;cursor:grab}
+#agent-graph-canvas:active{cursor:grabbing}
+.agent-tooltip{position:absolute;background:var(--bg-2);border:1px solid oklch(0.30 0.010 260);border-radius:var(--radius);padding:12px 16px;font-size:12px;pointer-events:none;z-index:10;max-width:320px;box-shadow:0 8px 24px oklch(0.08 0.010 260)}
+.agent-tooltip .tt-name{font-weight:700;font-size:14px;margin-bottom:6px}
+.agent-tooltip .tt-row{display:flex;justify-content:space-between;gap:16px;padding:2px 0}
+.agent-tooltip .tt-key{color:var(--fg-2)}
+.agent-tooltip .tt-val{font-family:var(--font-mono);color:var(--fg-0)}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:var(--fg-2);padding:8px 12px;border-bottom:1px solid oklch(0.25 0.008 260);font-weight:600}
+td{padding:8px 12px;border-bottom:1px solid oklch(0.18 0.008 260);color:var(--fg-1)}
+tr:hover td{background:var(--bg-1)}
+
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.03em}
+.badge-ready{background:oklch(0.22 0.04 150);color:var(--green)}
+.badge-busy{background:oklch(0.22 0.04 70);color:var(--orange)}
+.badge-idle{background:oklch(0.22 0.04 260);color:var(--blue)}
+.badge-zombie{background:oklch(0.22 0.04 25);color:var(--red)}
+.badge-running{background:oklch(0.22 0.04 70);color:var(--orange)}
+.badge-completed{background:oklch(0.22 0.04 150);color:var(--green)}
+.badge-failed{background:oklch(0.22 0.04 25);color:var(--red)}
+.badge-pending{background:oklch(0.22 0.04 260);color:var(--blue)}
+.badge-info{background:oklch(0.22 0.04 250);color:var(--blue)}
+.badge-warning{background:oklch(0.22 0.04 70);color:var(--orange)}
+.badge-error{background:oklch(0.22 0.04 25);color:var(--red)}
+
+.log-stream{background:var(--bg-1);border:1px solid oklch(0.25 0.008 260);border-radius:var(--radius);max-height:calc(100vh - 200px);overflow-y:auto;font-family:var(--font-mono);font-size:12px}
+.log-entry{padding:6px 14px;border-bottom:1px solid oklch(0.18 0.008 260);display:grid;grid-template-columns:70px 70px 1fr;gap:8px;align-items:baseline}
+.log-entry:hover{background:var(--bg-2)}
+.log-time{color:var(--fg-2);font-size:11px}
+.log-sev{font-size:11px;font-weight:600;text-transform:uppercase}
+.log-msg{color:var(--fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.file-tree{font-family:var(--font-mono);font-size:12px;line-height:1.8}
+.file-tree .dir{color:var(--fg-1);cursor:pointer}
+.file-tree .dir::before{content:"▸ ";color:var(--fg-2)}
+.file-tree .dir.open::before{content:"▾ "}
+.file-tree .file{color:var(--fg-2);cursor:pointer;padding-left:16px}
+.file-tree .file:hover{color:var(--accent)}
+
+.empty-state{text-align:center;padding:60px 20px;color:var(--fg-2);font-size:13px}
+.empty-state .empty-icon{font-size:32px;margin-bottom:12px;opacity:0.3}
+
+.filter-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.filter-bar select,.filter-bar input{background:var(--bg-2);border:1px solid oklch(0.25 0.008 260);border-radius:var(--radius);color:var(--fg-0);padding:6px 10px;font-size:12px;font-family:var(--font-sans)}
+.filter-bar select:focus,.filter-bar input:focus{outline:1px solid var(--accent-dim);border-color:var(--accent-dim)}
+
+.loading{display:flex;align-items:center;justify-content:center;padding:40px;color:var(--fg-2);font-size:13px}
+.loading::after{content:"";display:inline-block;width:16px;height:16px;border:2px solid var(--fg-2);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;margin-left:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.detail-panel{background:var(--bg-1);border:1px solid oklch(0.25 0.008 260);border-radius:var(--radius);padding:20px;margin-top:16px}
+.detail-panel h3{font-size:14px;font-weight:700;margin-bottom:12px;color:var(--fg-0)}
+.detail-row{display:flex;gap:8px;padding:4px 0;font-size:12px}
+.detail-key{color:var(--fg-2);min-width:120px}
+.detail-val{color:var(--fg-0);font-family:var(--font-mono);word-break:break-all}
+
+.leaderboard-row{display:grid;grid-template-columns:40px 1fr 100px 80px 80px;gap:8px;align-items:center;padding:10px 14px;border-bottom:1px solid oklch(0.18 0.008 260);font-size:13px}
+.leaderboard-row:hover{background:var(--bg-2)}
+.rank{font-family:var(--font-mono);font-weight:700;color:var(--fg-2);font-size:16px}
+.rank-1{color:var(--accent)}
+.rank-2{color:var(--blue)}
+.rank-3{color:var(--purple)}
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <div class="logo">OpenSwarm<small>dashboard v0.7</small></div>
+    <nav>
+      <div class="nav-item active" data-view="overview"><span class="icon">&#9678;</span> System Overview</div>
+      <div class="nav-item" data-view="agents"><span class="icon">&#9881;</span> Agent Graph</div>
+      <div class="nav-item" data-view="workflows"><span class="icon">&#9654;</span> Workflows</div>
+      <div class="nav-item" data-view="logs"><span class="icon">&#9776;</span> Event Log</div>
+      <div class="nav-item" data-view="workspaces"><span class="icon">&#128193;</span> Workspaces</div>
+      <div class="nav-item" data-view="loops"><span class="icon">&#8635;</span> Loop Leaderboard</div>
+      <div class="nav-item" data-view="memory"><span class="icon">&#9670;</span> Memory</div>
+    </nav>
+    <div class="connection-status" id="conn-status">
+      <span class="dot dot-warn"></span> connecting...
+    </div>
+  </aside>
+  <main>
+    <section class="view active" id="view-overview">
+      <div class="view-header"><h2>System Overview</h2><p>Live swarm metrics and health</p></div>
+      <div class="metrics-grid" id="metrics-grid"></div>
+      <div id="overview-agents-summary"></div>
+    </section>
+    <section class="view" id="view-agents">
+      <div class="view-header"><h2>Agent Graph</h2><p>Agents as nodes, messages as edges. Click a node for details.</p></div>
+      <div id="agent-graph-container"><canvas id="agent-graph-canvas"></canvas></div>
+    </section>
+    <section class="view" id="view-workflows">
+      <div class="view-header"><h2>Workflows</h2><p>All workflows across the swarm</p></div>
+      <div class="filter-bar">
+        <select id="wf-status-filter"><option value="">All statuses</option><option value="running">Running</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="pending">Pending</option></select>
+      </div>
+      <div id="workflows-table"></div>
+    </section>
+    <section class="view" id="view-logs">
+      <div class="view-header"><h2>Event Log</h2><p>Real-time event stream from the kernel bus</p></div>
+      <div class="filter-bar">
+        <select id="log-sev-filter"><option value="">All severities</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option></select>
+        <input id="log-agent-filter" placeholder="Agent ID..." />
+      </div>
+      <div class="log-stream" id="log-stream"></div>
+    </section>
+    <section class="view" id="view-workspaces">
+      <div class="view-header"><h2>Workspaces</h2><p>Harness workspace files and git history</p></div>
+      <div id="workspaces-content"></div>
+    </section>
+    <section class="view" id="view-loops">
+      <div class="view-header"><h2>Loop Leaderboard</h2><p>Loop templates ranked by performance</p></div>
+      <div id="loops-content"></div>
+    </section>
+    <section class="view" id="view-memory">
+      <div class="view-header"><h2>Memory</h2><p>Agent persistent memory items</p></div>
+      <div class="filter-bar">
+        <input id="mem-agent-filter" placeholder="Agent ID..." />
+        <input id="mem-type-filter" placeholder="Type (observation, decision...)" />
+      </div>
+      <div id="memory-content"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+const API = window.location.origin;
+let ws = null;
+let wsReconnectTimer = null;
+let agents = [];
+let workflows = [];
+let metrics = {};
+let logEntries = [];
+const MAX_LOG_ENTRIES = 500;
+
+function $(s){return document.querySelector(s)}
+function $$(s){return document.querySelectorAll(s)}
+
+async function api(path){
+  const r = await fetch(API + path);
+  if(!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+
+function connectWS(){
+  if(ws && ws.readyState < 2) return;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/stream`);
+  ws.onopen = () => {
+    $('#conn-status').innerHTML = '<span class="dot dot-ok"></span> live';
+    clearTimeout(wsReconnectTimer);
+  };
+  ws.onmessage = (e) => {
+    try{ handleWS(JSON.parse(e.data)); }catch(err){ console.error('ws parse:', err); }
+  };
+  ws.onclose = () => {
+    $('#conn-status').innerHTML = '<span class="dot dot-err"></span> disconnected';
+    wsReconnectTimer = setTimeout(connectWS, 3000);
+  };
+  ws.onerror = () => {
+    $('#conn-status').innerHTML = '<span class="dot dot-warn"></span> reconnecting...';
+  };
+}
+
+function handleWS(msg){
+  if(msg.type === 'snapshot'){
+    if(msg.data?.metrics) updateMetrics(msg.data.metrics);
+    if(msg.data?.agents) { agents = msg.data.agents; renderAgentGraph(); }
+  } else if(msg.type === 'event'){
+    const name = msg.event_name || msg.data?.payload?.data?.event || 'unknown';
+    const data = msg.data?.payload?.data || msg.data || {};
+    addLogEntry({
+      time: new Date().toISOString().slice(11,19),
+      severity: name.includes('error') || name.includes('denied') || name.includes('zombie') ? 'error' :
+                name.includes('overflow') || name.includes('restart') ? 'warning' : 'info',
+      sender: data.sender || data.agent_id || 'kernel',
+      message: `${name}: ${JSON.stringify(data).slice(0,120)}`
+    });
+    if(name.includes('agent')) refreshAgents();
+    if(name.includes('workflow')) refreshWorkflows();
+  }
+}
+
+function addLogEntry(entry){
+  logEntries.unshift(entry);
+  if(logEntries.length > MAX_LOG_ENTRIES) logEntries.length = MAX_LOG_ENTRIES;
+  renderLogs();
+}
+
+function updateMetrics(m){
+  metrics = m;
+  const grid = $('#metrics-grid');
+  const cards = [
+    {label:'Active Agents', value:m.active_agents??'--', sub:`${m.total_agents??0} total, ${m.zombie_agents??0} zombie`, cls:'green'},
+    {label:'Busy Agents', value:m.busy_agents??'--', sub:`${m.idle_agents??0} idle`, cls:'orange'},
+    {label:'Running Workflows', value:m.running_workflows??'--', sub:`${m.completed_workflows??0} done, ${m.failed_workflows??0} failed`, cls:'accent'},
+    {label:'Messages/min', value:(m.messages_per_minute??0).toFixed(1), sub:'throughput', cls:'accent'},
+    {label:'Avg Latency', value:`${(m.avg_loop_latency_ms??0).toFixed(0)}ms`, sub:'loop cycle', cls:m.avg_loop_latency_ms>500?'red':'accent'},
+    {label:'Cost Today', value:`$${(m.total_cost_today_usd??0).toFixed(2)}`, sub:'cumulative', cls:m.total_cost_today_usd>10?'orange':'accent'},
+    {label:'Queue Depth', value:m.queue_total??'--', sub:`${m.upqueue_seconds??0}s backlog`, cls:m.queue_total>5?'orange':'accent'},
+    {label:'Uptime', value:m.started_at? formatUptime(m.started_at):'--', sub:'since start', cls:'accent'},
+  ];
+  grid.innerHTML = cards.map(c=>`<div class="metric-card ${c.cls}"><div class="label">${c.label}</div><div class="value">${c.value}</div><div class="sub">${c.sub}</div></div>`).join('');
+}
+
+function formatUptime(iso){
+  try{
+    const ms = Date.now() - new Date(iso).getTime();
+    const h = Math.floor(ms/3600000);
+    const m = Math.floor((ms%3600000)/60000);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }catch{ return '--'; }
+}
+
+async function refreshAgents(){
+  try{ agents = await api('/api/agents'); renderAgentGraph(); renderOverviewAgents(); }catch(e){ console.error('agents:', e); }
+}
+
+function renderOverviewAgents(){
+  const el = $('#overview-agents-summary');
+  if(!agents.length){ el.innerHTML = '<div class="empty-state"><div class="empty-icon">&#9881;</div>No agents registered</div>'; return; }
+  const byStatus = {};
+  agents.forEach(a=>{ byStatus[a.status] = (byStatus[a.status]||0)+1; });
+  let html = '<table><thead><tr><th>Agent</th><th>Role</th><th>Status</th><th>Heartbeat</th><th>Category</th></tr></thead><tbody>';
+  agents.slice(0,20).forEach(a=>{
+    html += `<tr><td style="font-family:var(--font-mono);font-weight:600">${esc(a.agent_id)}</td><td>${esc(a.role)}</td><td><span class="badge badge-${a.status}">${esc(a.status)}</span></td><td>${a.heartbeat_age_seconds}s</td><td>${esc(a.category||'')}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+let graphNodes = [];
+let graphEdges = [];
+let graphDrag = null;
+let graphPan = {x:0,y:0};
+let graphScale = 1;
+let graphHover = null;
+
+function renderAgentGraph(){
+  const canvas = $('#agent-graph-canvas');
+  if(!canvas) return;
+  const container = $('#agent-graph-container');
+  canvas.width = container.clientWidth;
+  canvas.height = container.clientHeight;
+
+  if(!agents.length){
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--fg-2').trim();
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No agents registered. Start the kernel to see agents appear.', canvas.width/2, canvas.height/2);
+    return;
+  }
+
+  const cx = canvas.width/2, cy = canvas.height/2;
+  const radius = Math.min(cx,cy) * 0.6;
+  const existing = new Map(graphNodes.map(n=>[n.id,n]));
+  graphNodes = agents.map((a,i)=>{
+    const angle = (2*Math.PI*i/agents.length) - Math.PI/2;
+    const ex = existing.get(a.agent_id);
+    return {
+      id: a.agent_id,
+      label: a.human_readable_name || a.agent_id,
+      role: a.role || '',
+      status: a.status || 'ready',
+      category: a.category || '',
+      x: ex?.x ?? cx + radius*Math.cos(angle),
+      y: ex?.y ?? cy + radius*Math.sin(angle),
+      vx: 0, vy: 0,
+      task: a.current_task || ''
+    };
+  });
+
+  graphEdges = [];
+  for(let i=0;i<agents.length;i++){
+    for(let j=i+1;j<agents.length;j++){
+      if(agents[i].role === 'orchestrator' || agents[j].role === 'orchestrator' || agents[i].category === agents[j].category){
+        graphEdges.push({from:i,to:j});
+      }
+    }
+  }
+
+  drawGraph();
+}
+
+function drawGraph(){
+  const canvas = $('#agent-graph-canvas');
+  if(!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+  ctx.save();
+  ctx.translate(graphPan.x, graphPan.y);
+  ctx.scale(graphScale, graphScale);
+
+  const statusColor = {ready:'var(--green)',busy:'var(--orange)',idle:'var(--blue)',zombie:'var(--red)'};
+
+  graphEdges.forEach(e=>{
+    const a = graphNodes[e.from], b = graphNodes[e.to];
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = 'oklch(0.35 0.008 260)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+
+  graphNodes.forEach((n,i)=>{
+    const isHover = graphHover === i;
+    const color = statusColor[n.status] || 'var(--fg-2)';
+    const nodeW = 140, nodeH = 56;
+
+    ctx.fillStyle = isHover ? 'oklch(0.25 0.010 260)' : 'oklch(0.19 0.008 260)';
+    ctx.strokeStyle = isHover ? color : 'oklch(0.30 0.010 260)';
+    ctx.lineWidth = isHover ? 2 : 1;
+    roundRect(ctx, n.x - nodeW/2, n.y - nodeH/2, nodeW, nodeH, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(n.x - nodeW/2 + 14, n.y - 8, 4, 0, 2*Math.PI);
+    ctx.fill();
+
+    ctx.fillStyle = 'oklch(0.92 0.005 260)';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(n.label.slice(0,16), n.x - nodeW/2 + 24, n.y - 8);
+
+    ctx.fillStyle = 'oklch(0.55 0.010 260)';
+    ctx.font = '10px sans-serif';
+    ctx.fillText(n.role + (n.task ? ' · ' + n.task.slice(0,20) : ''), n.x - nodeW/2 + 24, n.y + 10);
+  });
+
+  ctx.restore();
+
+  if(graphHover !== null){
+    const n = graphNodes[graphHover];
+    if(n) drawTooltip(n);
+  }
+}
+
+function drawTooltip(n){
+  let tt = $('#agent-tooltip');
+  if(!tt){
+    tt = document.createElement('div');
+    tt.id = 'agent-tooltip';
+    tt.className = 'agent-tooltip';
+    $('#agent-graph-container').appendChild(tt);
+  }
+  const sx = (n.x + graphPan.x) * graphScale;
+  const sy = (n.y + graphPan.y) * graphScale;
+  tt.style.left = (sx + 80) + 'px';
+  tt.style.top = (sy - 20) + 'px';
+  tt.innerHTML = `<div class="tt-name">${esc(n.label)}</div>
+    <div class="tt-row"><span class="tt-key">ID</span><span class="tt-val">${esc(n.id)}</span></div>
+    <div class="tt-row"><span class="tt-key">Role</span><span class="tt-val">${esc(n.role)}</span></div>
+    <div class="tt-row"><span class="tt-key">Status</span><span class="tt-val">${esc(n.status)}</span></div>
+    <div class="tt-row"><span class="tt-key">Category</span><span class="tt-val">${esc(n.category)}</span></div>
+    ${n.task ? `<div class="tt-row"><span class="tt-key">Task</span><span class="tt-val">${esc(n.task)}</span></div>` : ''}`;
+}
+
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.lineTo(x+w-r,y);
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);
+  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);
+  ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+function setupGraphInteraction(){
+  const canvas = $('#agent-graph-canvas');
+  let isDragging = false;
+  let lastMouse = {x:0,y:0};
+  let isPanning = false;
+
+  canvas.addEventListener('mousedown', (e)=>{
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left - graphPan.x) / graphScale;
+    const my = (e.clientY - rect.top - graphPan.y) / graphScale;
+
+    let hit = null;
+    graphNodes.forEach((n,i)=>{
+      if(Math.abs(mx - n.x) < 70 && Math.abs(my - n.y) < 28) hit = i;
+    });
+
+    if(hit !== null){
+      graphDrag = hit;
+      isDragging = true;
+    } else {
+      isPanning = true;
+    }
+    lastMouse = {x:e.clientX, y:e.clientY};
+  });
+
+  canvas.addEventListener('mousemove', (e)=>{
+    const rect = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left - graphPan.x) / graphScale;
+    const my = (e.clientY - rect.top - graphPan.y) / graphScale;
+
+    if(isDragging && graphDrag !== null){
+      graphNodes[graphDrag].x = mx;
+      graphNodes[graphDrag].y = my;
+      drawGraph();
+    } else if(isPanning){
+      graphPan.x += e.clientX - lastMouse.x;
+      graphPan.y += e.clientY - lastMouse.y;
+      drawGraph();
+    } else {
+      let hit = null;
+      graphNodes.forEach((n,i)=>{
+        if(Math.abs(mx - n.x) < 70 && Math.abs(my - n.y) < 28) hit = i;
+      });
+      if(hit !== graphHover){
+        graphHover = hit;
+        drawGraph();
+      }
+    }
+    lastMouse = {x:e.clientX, y:e.clientY};
+  });
+
+  canvas.addEventListener('mouseup', ()=>{
+    isDragging = false;
+    isPanning = false;
+    graphDrag = null;
+  });
+
+  canvas.addEventListener('wheel', (e)=>{
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    graphScale = Math.max(0.3, Math.min(3, graphScale * delta));
+    drawGraph();
+  });
+
+  canvas.addEventListener('dblclick', async ()=>{
+    if(graphHover === null) return;
+    const n = graphNodes[graphHover];
+    try{
+      const detail = await api(`/api/agents/${encodeURIComponent(n.id)}`);
+      let html = `<div class="detail-panel"><h3>${esc(detail.manifest?.human_readable_name || n.id)}</h3>`;
+      html += `<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val"><span class="badge badge-${detail.status}">${esc(detail.status)}</span></span></div>`;
+      html += `<div class="detail-row"><span class="detail-key">Heartbeat</span><span class="detail-val">${detail.heartbeat_age_seconds}s ago</span></div>`;
+      html += `<div class="detail-row"><span class="detail-key">Queue Size</span><span class="detail-val">${detail.pending_queue_size}</span></div>`;
+      if(detail.recent_errors?.length){
+        html += `<h3 style="margin-top:16px">Recent Errors</h3>`;
+        detail.recent_errors.slice(0,5).forEach(e=>{
+          html += `<div class="detail-row"><span class="detail-key">${esc(e.timestamp||'')}</span><span class="detail-val" style="color:var(--red)">${esc(e.summary||e.action||'')}</span></div>`;
+        });
+      }
+      if(detail.recent_memory?.length){
+        html += `<h3 style="margin-top:16px">Recent Memory</h3>`;
+        detail.recent_memory.slice(0,5).forEach(m=>{
+          html += `<div class="detail-row"><span class="detail-key">${esc(m.type||'')}</span><span class="detail-val">${esc(String(m.content||'').slice(0,100))}</span></div>`;
+        });
+      }
+      html += '</div>';
+      const existing = $('#agent-detail-panel');
+      if(existing) existing.remove();
+      const panel = document.createElement('div');
+      panel.id = 'agent-detail-panel';
+      panel.innerHTML = html;
+      $('#view-agents').appendChild(panel);
+    }catch(err){ console.error('agent detail:', err); }
+  });
+}
+
+async function refreshWorkflows(){
+  try{ workflows = await api('/api/workflows'); renderWorkflows(); }catch(e){ console.error('workflows:', e); }
+}
+
+function renderWorkflows(){
+  const el = $('#workflows-table');
+  const filter = $('#wf-status-filter')?.value || '';
+  const filtered = filter ? workflows.filter(w=>w.status===filter) : workflows;
+  if(!filtered.length){ el.innerHTML = '<div class="empty-state"><div class="empty-icon">&#9654;</div>No workflows found</div>'; return; }
+  let html = '<table><thead><tr><th>ID</th><th>Name</th><th>Status</th><th>Owner</th><th>Steps</th><th>Updated</th></tr></thead><tbody>';
+  filtered.forEach(w=>{
+    html += `<tr style="cursor:pointer" onclick="showWorkflowDetail('${esc(w.workflow_id)}')"><td style="font-family:var(--font-mono);font-size:11px">${esc(w.workflow_id?.slice(0,8))}...</td><td>${esc(w.name)}</td><td><span class="badge badge-${w.status}">${esc(w.status)}</span></td><td>${esc(w.owner_agent)}</td><td>${w.completed_steps||0}/${w.step_count||0}</td><td>${w.updated_at?.slice(11,19)||''}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+async function showWorkflowDetail(id){
+  try{
+    const d = await api(`/api/workflows/${encodeURIComponent(id)}`);
+    let html = `<div class="detail-panel"><h3>${esc(d.name || id)}</h3>`;
+    html += `<div class="detail-row"><span class="detail-key">Status</span><span class="detail-val"><span class="badge badge-${d.status}">${esc(d.status)}</span></span></div>`;
+    html += `<div class="detail-row"><span class="detail-key">Owner</span><span class="detail-val">${esc(d.owner_agent)}</span></div>`;
+    if(d.steps?.length){
+      html += '<h3 style="margin-top:16px">Steps</h3>';
+      d.steps.forEach(s=>{
+        html += `<div class="detail-row"><span class="detail-key">${esc(s.step_id||s.name||'')}</span><span class="detail-val"><span class="badge badge-${s.status}">${esc(s.status)}</span> ${s.attempts? s.attempts+' attempt(s)':''}</span></div>`;
+      });
+    }
+    html += '</div>';
+    const existing = $('#wf-detail-panel');
+    if(existing) existing.remove();
+    const panel = document.createElement('div');
+    panel.id = 'wf-detail-panel';
+    panel.innerHTML = html;
+    $('#view-workflows').appendChild(panel);
+  }catch(err){ console.error('workflow detail:', err); }
+}
+window.showWorkflowDetail = showWorkflowDetail;
+
+function renderLogs(){
+  const el = $('#log-stream');
+  const sevFilter = $('#log-sev-filter')?.value || '';
+  const agentFilter = $('#log-agent-filter')?.value?.toLowerCase() || '';
+  const filtered = logEntries.filter(e=>{
+    if(sevFilter && e.severity !== sevFilter) return false;
+    if(agentFilter && !e.sender.toLowerCase().includes(agentFilter)) return false;
+    return true;
+  });
+  el.innerHTML = filtered.slice(0,200).map(e=>
+    `<div class="log-entry"><span class="log-time">${esc(e.time)}</span><span class="log-sev" style="color:var(--${e.severity==='error'?'red':e.severity==='warning'?'orange':'blue'})">${esc(e.severity)}</span><span class="log-msg">${esc(e.message)}</span></div>`
+  ).join('');
+}
+
+async function refreshWorkspaces(){
+  try{
+    const ws = await api('/api/workspaces');
+    const el = $('#workspaces-content');
+    if(!ws.length){ el.innerHTML = '<div class="empty-state"><div class="empty-icon">&#128193;</div>No workspaces found</div>'; return; }
+    let html = '<table><thead><tr><th>Workflow</th><th>Path</th><th>Files</th><th>Size</th><th>Git</th></tr></thead><tbody>';
+    ws.forEach(w=>{
+      html += `<tr style="cursor:pointer"><td style="font-family:var(--font-mono)">${esc(w.workflow_id||w.root_path?.split('/').pop()||'')}</td><td>${esc(w.root_path||'')}</td><td>${w.file_count??'-'}</td><td>${formatBytes(w.total_size_bytes)}</td><td>${w.git_initialized?'<span class="badge badge-ready">yes</span>':'<span class="badge badge-idle">no</span>'}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  }catch(e){ console.error('workspaces:', e); }
+}
+
+async function refreshLoops(){
+  try{
+    const loops = await api('/api/loops');
+    const el = $('#loops-content');
+    if(!loops.length){ el.innerHTML = '<div class="empty-state"><div class="empty-icon">&#8635;</div>No loop templates found</div>'; return; }
+    let html = '<div class="leaderboard-row" style="border-bottom:1px solid oklch(0.25 0.008 260)"><span style="font-size:11px;color:var(--fg-2)">#</span><span style="font-size:11px;color:var(--fg-2)">Template</span><span style="font-size:11px;color:var(--fg-2)">Success</span><span style="font-size:11px;color:var(--fg-2)">Avg Score</span><span style="font-size:11px;color:var(--fg-2)">Avg Cost</span></div>';
+    loops.forEach((l,i)=>{
+      const rankCls = i<3 ? ` rank-${i+1}` : '';
+      html += `<div class="leaderboard-row"><span class="rank${rankCls}">${i+1}</span><span>${esc(l.name||l.id)}</span><span style="color:var(--green);font-family:var(--font-mono)">${(l.success_rate*100).toFixed(1)}%</span><span style="font-family:var(--font-mono)">${(l.avg_score??0).toFixed(2)}</span><span style="font-family:var(--font-mono)">$${(l.avg_cost_usd??0).toFixed(3)}</span></div>`;
+    });
+    el.innerHTML = html;
+  }catch(e){ console.error('loops:', e); }
+}
+
+async function refreshMemory(){
+  const agentId = $('#mem-agent-filter')?.value?.trim();
+  if(!agentId){ $('#memory-content').innerHTML = '<div class="empty-state"><div class="empty-icon">&#9670;</div>Enter an agent ID to view memory</div>'; return; }
+  try{
+    const items = await api(`/api/memory/${encodeURIComponent(agentId)}`);
+    const el = $('#memory-content');
+    if(!items.length){ el.innerHTML = '<div class="empty-state">No memory items found</div>'; return; }
+    let html = '<table><thead><tr><th>Type</th><th>Content</th><th>Relevance</th><th>Source</th><th>Workflow</th></tr></thead><tbody>';
+    items.forEach(m=>{
+      html += `<tr><td><span class="badge badge-info">${esc(m.type||'')}</span></td><td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(String(m.content||'').slice(0,120))}</td><td style="font-family:var(--font-mono)">${(m.relevance_score??0).toFixed(2)}</td><td>${esc(m.source||'')}</td><td style="font-family:var(--font-mono);font-size:11px">${esc(m.workflow_id||'')}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  }catch(e){ console.error('memory:', e); }
+}
+
+function formatBytes(b){
+  if(!b) return '-';
+  if(b < 1024) return b + 'B';
+  if(b < 1048576) return (b/1024).toFixed(1) + 'KB';
+  return (b/1048576).toFixed(1) + 'MB';
+}
+
+function esc(s){
+  if(s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function switchView(name){
+  $$('.view').forEach(v=>v.classList.remove('active'));
+  $$('.nav-item').forEach(n=>n.classList.remove('active'));
+  const view = $(`#view-${name}`);
+  if(view) view.classList.add('active');
+  const nav = $(`.nav-item[data-view="${name}"]`);
+  if(nav) nav.classList.add('active');
+
+  if(name === 'overview'){ refreshMetrics(); refreshAgents(); }
+  else if(name === 'agents'){ refreshAgents(); }
+  else if(name === 'workflows'){ refreshWorkflows(); }
+  else if(name === 'logs'){ refreshLogs(); }
+  else if(name === 'workspaces'){ refreshWorkspaces(); }
+  else if(name === 'loops'){ refreshLoops(); }
+  else if(name === 'memory'){ refreshMemory(); }
+}
+
+async function refreshMetrics(){
+  try{
+    const m = await api('/api/metrics');
+    updateMetrics(m);
+  }catch(e){ console.error('metrics:', e); }
+}
+
+function init(){
+  $$('.nav-item').forEach(n=>{
+    n.addEventListener('click', ()=> switchView(n.dataset.view));
+  });
+
+  $('#wf-status-filter')?.addEventListener('change', renderWorkflows);
+  $('#log-sev-filter')?.addEventListener('change', renderLogs);
+  $('#log-agent-filter')?.addEventListener('input', renderLogs);
+  $('#mem-agent-filter')?.addEventListener('change', refreshMemory);
+  $('#mem-type-filter')?.addEventListener('change', refreshMemory);
+
+  setupGraphInteraction();
+
+  window.addEventListener('resize', ()=>{
+    const canvas = $('#agent-graph-canvas');
+    if(canvas){
+      const container = $('#agent-graph-container');
+      canvas.width = container.clientWidth;
+      canvas.height = container.clientHeight;
+      drawGraph();
+    }
+  });
+
+  connectWS();
+  refreshMetrics();
+  refreshAgents();
+  refreshWorkflows();
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

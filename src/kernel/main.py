@@ -81,6 +81,20 @@ def create_app(settings: KernelSettings | None = None) -> FastAPI:
         app.state.bus = bus
         app.state.heartbeat = heartbeat
 
+        # Phase 11: opt-in auth. Local dev (the default) leaves this
+        # disabled; setting OPENSWARM_AUTH__ENABLED=true wires the
+        # middleware into every FastAPI dependency that opts in.
+        from .auth import make_middleware_from_config
+        from config import get_config
+
+        unified = get_config()
+        app.state.auth = make_middleware_from_config(
+            enabled=unified.auth.enabled,
+            secret=unified.auth.jwt_secret,
+            algorithm=unified.auth.jwt_algorithm,
+            ttl_seconds=unified.auth.jwt_ttl_seconds,
+        )
+
         # Best-effort: install a signal handler so SIGTERM triggers a
         # graceful shutdown. Uvicorn normally handles this, but tests
         # that drive the app directly may need the hook.

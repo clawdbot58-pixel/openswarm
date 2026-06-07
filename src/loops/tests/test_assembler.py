@@ -324,3 +324,147 @@ class TestAssemblerError:
         """Test AssemblerError has proper message."""
         error = AssemblerError("Graph validation failed")
         assert "Graph validation failed" in str(error)
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: Pydantic LoopGraph + assemble_builtin + execute_graph
+# ---------------------------------------------------------------------------
+
+
+class TestPydanticLoopGraph:
+    """The Phase 10 Pydantic :class:`LoopGraph` and its helpers."""
+
+    def _make_graph(self):
+        from loops.assembler import LoopGraph
+        from loops.primitives import LoopPrimitive, PrimitiveType
+
+        nodes = [
+            LoopPrimitive(node_id="a", primitive=PrimitiveType.GENERATE),
+            LoopPrimitive(
+                node_id="b",
+                primitive=PrimitiveType.CRITIQUE,
+                temperature=0.3,
+            ),
+        ]
+        from loops.assembler import LoopEdge
+
+        edges = [LoopEdge(from_node="a", to_node="b")]
+        return LoopGraph(
+            loop_id="g1",
+            name="g1",
+            description="two nodes",
+            nodes=nodes,
+            edges=edges,
+            terminal_nodes=["b"],
+            entry_node="a",
+        )
+
+    def test_validate_dag_ok(self):
+        g = self._make_graph()
+        g.validate_dag()
+        assert g.topological_order() == ["a", "b"]
+
+    def test_cycle_raises(self):
+        from loops.assembler import LoopEdge, LoopGraph
+        from loops.graph import GraphValidationError
+        from loops.primitives import LoopPrimitive, PrimitiveType
+
+        nodes = [
+            LoopPrimitive(node_id="a", primitive=PrimitiveType.GENERATE),
+            LoopPrimitive(node_id="b", primitive=PrimitiveType.GENERATE),
+        ]
+        edges = [
+            LoopEdge(from_node="a", to_node="b"),
+            LoopEdge(from_node="b", to_node="a"),
+        ]
+        with pytest.raises(GraphValidationError):
+            LoopGraph(
+                loop_id="cycle",
+                name="cycle",
+                nodes=nodes,
+                edges=edges,
+                terminal_nodes=["a", "b"],
+                entry_node="a",
+            )
+
+    def test_duplicate_node_id_raises(self):
+        from loops.assembler import LoopGraph
+        from loops.graph import GraphValidationError
+        from loops.primitives import LoopPrimitive, PrimitiveType
+
+        nodes = [
+            LoopPrimitive(node_id="dup", primitive=PrimitiveType.GENERATE),
+            LoopPrimitive(node_id="dup", primitive=PrimitiveType.CRITIQUE),
+        ]
+        with pytest.raises(GraphValidationError):
+            LoopGraph(loop_id="x", name="x", nodes=nodes)
+
+    def test_to_from_dict_round_trip(self):
+        g = self._make_graph()
+        d = g.to_dict()
+        assert d["loop_id"] == "g1"
+        assert d["nodes"][0]["primitive"] == "generate"
+        assert d["edges"][0]["from_node"] == "a"
+        from loops.assembler import LoopGraph
+
+        g2 = LoopGraph.from_dict(d)
+        assert g2.loop_id == g.loop_id
+        assert [n.node_id for n in g2.nodes] == ["a", "b"]
+
+    def test_from_dict_accepts_short_edge_keys(self):
+        """Vision spec uses ``from``/``to``; from_dict should tolerate it."""
+        d = {
+            "loop_id": "short",
+            "name": "short",
+            "nodes": [
+                {"node_id": "a", "primitive": "generate"},
+                {"node_id": "b", "primitive": "critique"},
+            ],
+            "edges": [{"from": "a", "to": "b"}],
+            "terminal_nodes": ["b"],
+            "entry_node": "a",
+        }
+        from loops.assembler import LoopGraph
+
+        g = LoopGraph.from_dict(d)
+        assert g.edges[0].from_node == "a"
+        assert g.edges[0].to_node == "b"
+
+    def test_to_graph_round_trip(self):
+        """Pydantic <-> dataclass should round-trip losslessly."""
+        g = self._make_graph()
+        dc = g.to_graph()
+        assert dc.id == g.loop_id
+        assert len(dc.nodes) == len(g.nodes)
+        from loops.assembler import LoopGraph
+
+        g2 = LoopGraph.from_graph(dc)
+        assert [n.node_id for n in g2.nodes] == [n.node_id for n in g.nodes]
+
+    def test_incoming_outgoing_edges(self):
+        g = self._make_graph()
+        assert [e.to_node for e in g.incoming_edges("b")] == ["b"]
+        assert [e.to_node for e in g.incoming_edges("a")] == []
+        assert [e.from_node for e in g.outgoing_edges("a")] == ["a"]
+
+
+class TestAssembleBuiltin:
+    """The ``assemble_builtin`` factory for premade loops."""
+
+    @pytest.mark.parametrize(
+        "loop_type",
+        ["direct", "cot", "reflection", "tree", "debate", "ensemble"],
+    )
+    def test_assemble_builtin_returns_valid_dag(self, loop_type: str):
+        from loops.assembler import LoopAssembler
+
+        g = LoopAssembler().assemble_builtin(loop_type)
+        g.validate_dag()
+        assert g.loop_id
+        assert g.terminal_nodes
+
+    def test_assemble_builtin_unknown_raises(self):
+        from loops.assembler import LoopAssembler
+
+        with pytest.raises(ValueError):
+            LoopAssembler().assemble_builtin("nope")

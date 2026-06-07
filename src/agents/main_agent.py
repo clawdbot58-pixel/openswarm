@@ -12,7 +12,11 @@ execute tools, write files, or spawn workers directly. It:
   envelope to the Conductor;
 * on kernel events (``agent_zombie``, ``permission_denied``,
   ``queue_overflow``, …), logs them, reports critical ones to the
-  Conductor, and reports progress to the user in natural language.
+  Conductor, and reports progress to the user in natural language;
+* on Phase 9 self-healing events (``loop_detected``,
+  ``budget_exhausted``, ``step_timeout``, ``workflow_resume``,
+  ``step_recovered``) decides the recovery strategy and emits a
+  :class:`~kernel.recovery.RecoveryDecision` back to the kernel.
 
 This module is deliberately small. The heavy reasoning lives in the
 LLM via the system prompt; the Python code is plumbing.
@@ -23,6 +27,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -45,6 +50,19 @@ from .objective_parser import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Re-export the kernel's recovery types so callers can build decisions
+# without importing the kernel module directly. Keeps the public
+# surface narrow.
+try:  # pragma: no cover — defensive: kernel may not be importable in tests
+    from kernel.recovery import (  # type: ignore[import-not-found]
+        RecoveryActionLiteral,
+        RecoveryDecision,
+    )
+except Exception:  # noqa: BLE001
+    RecoveryActionLiteral = str  # type: ignore[assignment,misc]
+    RecoveryDecision = Any  # type: ignore[assignment,misc]
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +88,16 @@ SUBSCRIBED_KERNEL_EVENTS: tuple[str, ...] = (
     "queue_overflow",
     "envelope_rejected",
     "registration_rejected",
+    # Phase 9 self-healing events.
+    "loop_detected",
+    "step_timeout",
+    "budget_exhausted",
+    "workflow_resume",
+    "step_recovered",
+    "fallback_invoked",
+    "compensation_invoked",
+    "respawn_requested",
+    "escalation_requested",
 )
 
 # When the Main Agent asks the kernel's REST API for a status
@@ -179,6 +207,7 @@ class MainAgent(BaseAgent):
         http_timeout: float = 10.0,
         objective_min_confidence: float = 0.35,
         system_prompt_path: str | Path = "prompts/main_agent_system.md",
+        loop_optimizer: Any | None = None,
     ) -> None:
         super().__init__(
             manifest=manifest,
@@ -199,6 +228,10 @@ class MainAgent(BaseAgent):
         self._on_user_reply: (
             Callable[[UserReply], Awaitable[None]] | None
         ) = None
+        # Phase 10: optional loop optimizer.  When set, the Main Agent
+        # can ask it to pick a thinking-loop variant for a given task
+        # type via :meth:`select_thinking_loop`.
+        self._loop_optimizer: Any | None = loop_optimizer
 
     # -- properties --------------------------------------------------------
 
@@ -221,6 +254,98 @@ class MainAgent(BaseAgent):
         replies without polling a queue.
         """
         self._on_user_reply = callback
+
+    # -- Phase 10: thinking-loop selection --------------------------------
+
+    @property
+    def loop_optimizer(self) -> Any:
+        """The configured :class:`loop_optimizer.LoopOptimizer` (or ``None``)."""
+        return self._loop_optimizer
+
+    def set_loop_optimizer(self, optimizer: Any) -> None:
+        """Attach a :class:`loop_optimizer.LoopOptimizer` to this agent.
+
+        When an optimizer is attached, the Main Agent can be asked to
+        pick a thinking-loop variant for a given task type.  This is
+        the Phase 10 hook that lets the agent pick *which* loop to run
+        for a given user goal — the previous behaviour (always use
+        ``reflection``) is preserved when no optimizer is attached.
+        """
+        self._loop_optimizer = optimizer
+
+    async def select_thinking_loop(
+        self,
+        task_type: str,
+        *,
+        min_trials: int = 3,
+    ) -> Any:
+        """Pick the best-known thinking loop for ``task_type``.
+
+        Args:
+            task_type: Tag (e.g. ``"code_review"``,
+                ``"summarisation"``).
+            min_trials: Minimum evidence threshold for leaderboard
+                selection; falls back to a premade loop when no
+                entry clears the bar.
+
+        Returns:
+            A :class:`loops.assembler.LoopGraph`.  When no optimizer
+            is attached, returns the result of
+            :meth:`assemble_builtin` for the natural base loop
+            (``reflection`` / ``cot`` / ``tree`` / ``debate``).
+
+        Raises:
+            RuntimeError: when the optimizer raises (and the user did
+                not pass a custom base loop).
+        """
+        if self._loop_optimizer is None:
+            # Defensive default: assemble a premade loop without ever
+            # touching the leaderboard.  Keeps callers that never
+            # wired an optimizer working.
+            try:
+                from loops.assembler import LoopAssembler  # local import
+
+                base_id = self._default_base_for_task(task_type)
+                return LoopAssembler().assemble_builtin(base_id)
+            except Exception:  # noqa: BLE001
+                # Last-resort: an empty direct graph.
+                from loops.assembler import LoopAssembler
+
+                return LoopAssembler().assemble_builtin("reflection")
+        try:
+            return await self._loop_optimizer.select_for_task(
+                task_type=task_type, min_trials=min_trials
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("select_thinking_loop failed: %s", exc)
+            from loops.assembler import LoopAssembler
+
+            return LoopAssembler().assemble_builtin(
+                self._default_base_for_task(task_type)
+            )
+
+    @staticmethod
+    def _default_base_for_task(task_type: str) -> str:
+        """Map a task type to a sensible premade loop (Phase 4 default)."""
+        mapping = {
+            "code": "reflection",
+            "code_review": "reflection",
+            "review": "reflection",
+            "writing": "reflection",
+            "edit": "reflection",
+            "summary": "reflection",
+            "summarisation": "reflection",
+            "math": "cot",
+            "logic": "cot",
+            "research": "cot",
+            "analysis": "cot",
+            "design": "tree",
+            "planning": "tree",
+            "brainstorm": "tree",
+            "decision": "debate",
+            "tradeoff": "debate",
+        }
+        return mapping.get(task_type, "reflection")
 
     # -- inbound envelope handling -----------------------------------------
 
@@ -264,7 +389,8 @@ class MainAgent(BaseAgent):
         We never act on these directly — the Conductor does. We log
         them, optionally forward critical ones, and surface a brief
         message to the user when the event affects the user-visible
-        state.
+        state. Phase 9 self-healing events go through the recovery
+        handler chain which produces a :class:`RecoveryDecision`.
         """
         if event_name not in SUBSCRIBED_KERNEL_EVENTS:
             return
@@ -283,6 +409,23 @@ class MainAgent(BaseAgent):
                     ),
                 )
             )
+        elif event_name == "loop_detected":
+            await self._on_loop_detected(details)
+        elif event_name == "budget_exhausted":
+            await self._on_budget_exhausted(details)
+        elif event_name == "step_timeout":
+            await self._on_step_timeout(details)
+        elif event_name == "workflow_resume":
+            await self._on_workflow_resume(details)
+        elif event_name == "step_recovered":
+            await self._on_step_recovered(details)
+        elif event_name in (
+            "fallback_invoked",
+            "compensation_invoked",
+            "respawn_requested",
+            "escalation_requested",
+        ):
+            await self._on_recovery_event(event_name, details)
         else:
             # envelope_rejected, registration_rejected — log only.
             logger.info("kernel event %s: %s", event_name, details)
@@ -532,6 +675,316 @@ class MainAgent(BaseAgent):
             )
         )
 
+    # -- Phase 9 self-healing handlers -------------------------------------
+
+    async def _on_loop_detected(self, details: dict[str, Any]) -> None:
+        """Handle a kernel-emitted ``loop_detected`` event.
+
+        Builds a :class:`RecoveryDecision` via the pure-Python strategy
+        in :meth:`handle_loop_detected`, stores it for the conductor
+        to act on, and surfaces a short user-facing message.
+        """
+        decision = self.handle_loop_detected(details)
+        await self._record_recovery_decision(decision, source="loop_detected")
+        # Surface a brief message to the user.
+        agent_id = details.get("agent_id") or "?"
+        pattern = details.get("pattern") or "unknown"
+        count = details.get("consecutive_count") or 0
+        await self._surface(
+            UserReply(
+                text=(
+                    f"⚠️ Loop Detected: `{pattern}`\n"
+                    f"Agent: `{agent_id}`\n"
+                    f"Count: {count}\n"
+                    f"Decision: `{decision.action}`\n"
+                    f"Reason: {decision.reason}"
+                ),
+                is_error=(decision.action == "escalate_to_user"),
+            )
+        )
+
+    async def _on_budget_exhausted(self, details: dict[str, Any]) -> None:
+        """Handle ``budget_exhausted``: build a decision (default: escalate)."""
+        decision = self.handle_budget_exhausted(details)
+        await self._record_recovery_decision(decision, source="budget_exhausted")
+        wf = details.get("workflow_id") or "?"
+        step = details.get("step_id") or "?"
+        cost = details.get("cost_so_far")
+        budget = details.get("budget")
+        cost_str = f"${cost:.2f}" if isinstance(cost, (int, float)) else "?"
+        budget_str = f"${budget:.2f}" if isinstance(budget, (int, float)) else "?"
+        await self._surface(
+            UserReply(
+                text=(
+                    f"⚠️ Budget Exhausted\n"
+                    f"Step: `{step}` (workflow `{wf}`)\n"
+                    f"Cost: {cost_str} / {budget_str} budget\n"
+                    f"Decision: `{decision.action}`\n"
+                    f"Reason: {decision.reason}"
+                ),
+                is_error=(decision.action != "budget_override"),
+            )
+        )
+
+    async def _on_step_timeout(self, details: dict[str, Any]) -> None:
+        """Handle ``step_timeout``: escalate to user by default."""
+        wf = details.get("workflow_id") or "?"
+        step = details.get("step_id") or "?"
+        elapsed = details.get("elapsed_minutes")
+        max_min = details.get("max_minutes")
+        elapsed_str = (
+            f"{elapsed:.1f} min" if isinstance(elapsed, (int, float)) else "?"
+        )
+        max_str = (
+            f"{max_min:.1f} min" if isinstance(max_min, (int, float)) else "?"
+        )
+        await self._surface(
+            UserReply(
+                text=(
+                    f"⏱️ Step timeout\n"
+                    f"Step `{step}` of workflow `{wf}` exceeded its "
+                    f"{max_str} budget (elapsed {elapsed_str}).\n"
+                    f"Decision: escalate_to_user"
+                ),
+                is_error=True,
+            )
+        )
+
+    async def _on_workflow_resume(self, details: dict[str, Any]) -> None:
+        """Handle ``workflow_resume``: pick a strategy and surface."""
+        decision = self.handle_workflow_resume(details)
+        await self._record_recovery_decision(
+            decision, source="workflow_resume"
+        )
+        wf = details.get("workflow_id") or "?"
+        last = details.get("last_step") or "(none)"
+        await self._surface(
+            UserReply(
+                text=(
+                    f"🔄 Workflow resume\n"
+                    f"Workflow `{wf}` is recovering from last step `{last}`.\n"
+                    f"Decision: `{decision.action}`\n"
+                    f"Reason: {decision.reason}"
+                )
+            )
+        )
+
+    async def _on_step_recovered(self, details: dict[str, Any]) -> None:
+        """Handle ``step_recovered`` (positive feedback from the kernel)."""
+        strategy = details.get("strategy") or "?"
+        wf = details.get("workflow_id") or "?"
+        step = details.get("step_id") or "?"
+        mutate = details.get("mutate_count", 0)
+        await self._surface(
+            UserReply(
+                text=(
+                    f"✅ Step recovered\n"
+                    f"Step `{step}` of workflow `{wf}` (strategy "
+                    f"`{strategy}`, mutate {mutate}/3) is back on track."
+                )
+            )
+        )
+
+    async def _on_recovery_event(
+        self, event_name: str, details: dict[str, Any]
+    ) -> None:
+        """Generic log + user-surface for fallback / compensation / respawn / escalation events."""
+        logger.info("recovery event %s: %s", event_name, details)
+        wf = details.get("workflow_id") or "?"
+        if event_name == "fallback_invoked":
+            steps = details.get("fallback_steps") or []
+            steps_text = ", ".join(f"`{s}`" for s in steps) or "(none)"
+            await self._surface(
+                UserReply(
+                    text=(
+                        f"Fallback chain invoked for workflow `{wf}`: "
+                        f"{steps_text}."
+                    )
+                )
+            )
+        elif event_name == "compensation_invoked":
+            steps = details.get("compensation_steps") or []
+            steps_text = ", ".join(f"`{s}`" for s in steps) or "(none)"
+            await self._surface(
+                UserReply(
+                    text=(
+                        f"Compensation chain running for workflow `{wf}`: "
+                        f"{steps_text}."
+                    )
+                )
+            )
+        elif event_name == "respawn_requested":
+            await self._surface(
+                UserReply(
+                    text=(
+                        f"All agents in workflow `{wf}` will be respawned. "
+                        f"Reason: {details.get('reason') or '(not given)'}"
+                    )
+                )
+            )
+        elif event_name == "escalation_requested":
+            await self._surface(
+                UserReply(
+                    text=(
+                        f"Escalation requested for workflow `{wf}` / step "
+                        f"`{details.get('step_id', '?')}` — "
+                        f"action `{details.get('action', '?')}`."
+                    ),
+                    is_error=True,
+                )
+            )
+
+    # -- public Phase 9 decision helpers (testable, no LLM required) -------
+
+    def handle_loop_detected(
+        self, event: dict[str, Any]
+    ) -> "RecoveryDecision":
+        """Decide a recovery strategy for a ``loop_detected`` event.
+
+        Pure-Python and deterministic. The Main Agent may later call
+        the LLM to refine this, but the default policy is:
+
+        * ``mutate_exhausted`` → ``escalate_to_user``
+        * ``action_repeat``     → ``retry_with_different_approach``
+                                   (alias for ``retry_with_same_agent``)
+        * ``clarification_spin``→ ``escalate_to_user``
+        * ``tool_failure_repeat``→ ``mutate_config`` (upgrade model)
+        * anything else         → ``retry_with_same_agent``
+        """
+        pattern = str(event.get("pattern") or "")
+        if pattern == "mutate_exhausted":
+            return self._make_decision(
+                action="escalate_to_user",
+                reason="Mutate chain exhausted; need human guidance.",
+            )
+        if pattern == "clarification_spin":
+            return self._make_decision(
+                action="escalate_to_user",
+                reason="Agent keeps asking for clarification with no new input.",
+            )
+        if pattern == "tool_failure_repeat":
+            return self._make_decision(
+                action="mutate_config",
+                manifest_delta={"model_tier": "powerful"},
+                reason="Tool failing repeatedly; upgrading model tier.",
+            )
+        if pattern == "action_repeat":
+            return self._make_decision(
+                action="retry_with_same_agent",
+                reason="Agent repeating the same action; retrying once.",
+            )
+        # Unknown pattern: be conservative.
+        return self._make_decision(
+            action="retry_with_same_agent",
+            reason=f"Unrecognised loop pattern {pattern!r}; retrying.",
+        )
+
+    def handle_budget_exhausted(
+        self, event: dict[str, Any]
+    ) -> "RecoveryDecision":
+        """Decide a recovery strategy for a ``budget_exhausted`` event.
+
+        Default: ``escalate_to_user``. The Main Agent may issue a
+        one-time ``budget_override`` by calling :meth:`grant_budget_override`
+        and re-emitting the decision.
+        """
+        wf = event.get("workflow_id") or "?"
+        step = event.get("step_id") or "?"
+        return self._make_decision(
+            action="escalate_to_user",
+            reason=(
+                f"Step {step!r} of workflow {wf!r} exceeded its USD budget."
+            ),
+        )
+
+    def handle_workflow_resume(
+        self, event: dict[str, Any]
+    ) -> "RecoveryDecision":
+        """Decide a recovery strategy on ``workflow_resume``.
+
+        Default: ``continue_from_step`` from the most recent
+        checkpoint. The Main Agent may instead pick
+        ``rollback_n_steps`` or ``respawn_all_agents`` based on
+        user input.
+        """
+        wf = event.get("workflow_id") or "?"
+        last = event.get("last_step") or "(none)"
+        return self._make_decision(
+            action="continue_from_step",
+            reason=(
+                f"Resuming workflow {wf!r} from last step {last!r}."
+            ),
+        )
+
+    # -- internal helpers -------------------------------------------------
+
+    def _make_decision(
+        self,
+        *,
+        action: str,
+        reason: str,
+        manifest_delta: dict[str, Any] | None = None,
+        budget_override_usd: float | None = None,
+        rollback_n_steps: int = 0,
+        fallback_steps: list[str] | None = None,
+        compensation_steps: list[str] | None = None,
+    ) -> "RecoveryDecision":
+        """Build a :class:`RecoveryDecision` without depending on the LLM."""
+        try:
+            return RecoveryDecision(
+                action=action,  # type: ignore[arg-type]
+                manifest_delta=manifest_delta or {},
+                reason=reason,
+                budget_override_usd=budget_override_usd,
+                rollback_n_steps=rollback_n_steps,
+                fallback_steps=fallback_steps or [],
+                compensation_steps=compensation_steps or [],
+            )
+        except Exception:  # noqa: BLE001 — tests may pass a stub
+            return RecoveryDecision(  # type: ignore[call-arg]
+                action=action,
+                manifest_delta=manifest_delta or {},
+                reason=reason,
+            )
+
+    async def _record_recovery_decision(
+        self,
+        decision: "RecoveryDecision",
+        *,
+        source: str,
+    ) -> None:
+        """Audit the decision in the kernel registry (best-effort)."""
+        try:
+            payload = {
+                "source": source,
+                "action": getattr(decision, "action", "unknown"),
+                "reason": getattr(decision, "reason", ""),
+            }
+            md = getattr(decision, "manifest_delta", None)
+            if isinstance(md, dict) and md:
+                payload["manifest_delta"] = md
+            override = getattr(decision, "budget_override_usd", None)
+            if override is not None:
+                payload["budget_override_usd"] = override
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                # We don't fail loudly if the kernel is offline; the
+                # decision is still in self._recent_decisions.
+                try:
+                    await client.post(
+                        f"{self._kernel_rest_url}/audit",
+                        json={
+                            "action": "recovery_decision",
+                            "result": "ok",
+                            "details": payload,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "audit POST failed for recovery_decision"
+                    )
+        except Exception:  # noqa: BLE001
+            logger.exception("record_recovery_decision failed")
+
     async def _surface(self, reply: UserReply) -> UserReply:
         """Record the reply, fan it out, and return it."""
         await self._user_replies.put(reply)
@@ -653,12 +1106,59 @@ def load_main_agent_manifest(
     return AgentManifest.model_validate(data)
 
 
+async def run_daemon() -> None:
+    """Run the Main Agent as a long-lived background process."""
+    logging.basicConfig(
+        level=os.environ.get("OPENSWARM_LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    manifest_path = os.environ.get("MAIN_AGENT_MANIFEST_PATH", "manifests/main-agent.json")
+    ws_url = os.environ.get("KERNEL_WS", "ws://127.0.0.1:8765/ws")
+    kernel_rest_url = os.environ.get("KERNEL_REST_URL", "http://127.0.0.1:8765")
+
+    agent = MainAgent(
+        load_main_agent_manifest(manifest_path),
+        ws_url=ws_url,
+        kernel_rest_url=kernel_rest_url,
+    )
+    await agent.start()
+    logger.info("main agent connected to %s", ws_url)
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):
+            pass
+    try:
+        await stop.wait()
+    finally:
+        await agent.close()
+
+
+def main() -> None:
+    """Entry point for ``python -m agents.main_agent``."""
+    try:
+        asyncio.run(run_daemon())
+    except KeyboardInterrupt:
+        return
+
+
 __all__ = [
     "CONDUCTOR_AGENT_ID",
     "MainAgent",
+    "RecoveryActionLiteral",
+    "RecoveryDecision",
     "SPAWN_INITIAL_SWARM_ACTION",
     "SUBSCRIBED_KERNEL_EVENTS",
     "SwarmStatusSummary",
     "UserReply",
     "load_main_agent_manifest",
+    "main",
+    "run_daemon",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

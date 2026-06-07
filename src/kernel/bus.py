@@ -342,6 +342,7 @@ class MessageBus:
             metadata=EnvelopeMetadata(priority=8),
         )
         self.metrics.events_emitted += 1
+        await self._emit_to_main(event_type, details)
         await self.send(env)
         return env
 

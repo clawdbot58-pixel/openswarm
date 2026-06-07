@@ -339,3 +339,163 @@ class TestPrimitiveResult:
 
         assert result.output == "Test output"
         assert result.score is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: Pydantic LoopPrimitive / PrimitiveExecutor / PrimitiveType
+# ---------------------------------------------------------------------------
+
+
+class TestPrimitiveType:
+    """Tests for the Phase 10 :class:`PrimitiveType` enum."""
+
+    def test_six_canonical_types(self):
+        from loops.primitives import PrimitiveType
+
+        names = {t.value for t in PrimitiveType}
+        assert names == {
+            "generate",
+            "critique",
+            "revise",
+            "branch",
+            "vote",
+            "merge",
+        }
+
+    def test_enum_members_are_unique(self):
+        from loops.primitives import PrimitiveType
+
+        values = [t.value for t in PrimitiveType]
+        assert len(values) == len(set(values))
+
+
+class TestLoopPrimitive:
+    """Tests for the Phase 10 :class:`LoopPrimitive` Pydantic model."""
+
+    def test_default_construction(self):
+        from loops.primitives import LoopPrimitive, PrimitiveType
+
+        p = LoopPrimitive(
+            node_id="n1",
+            primitive=PrimitiveType.GENERATE,
+        )
+        assert p.node_id == "n1"
+        assert p.primitive == PrimitiveType.GENERATE
+        assert p.temperature == 0.7
+        assert p.model_override is None
+        assert p.parameters == {}
+
+    def test_extra_forbidden(self):
+        from loops.primitives import LoopPrimitive, PrimitiveType
+
+        with pytest.raises(Exception):
+            LoopPrimitive(
+                node_id="n1", primitive=PrimitiveType.GENERATE, bogus=1
+            )
+
+    def test_serialization_round_trip(self):
+        from loops.primitives import LoopPrimitive, PrimitiveType
+
+        p = LoopPrimitive(
+            node_id="n1",
+            primitive=PrimitiveType.CRITIQUE,
+            temperature=0.3,
+            parameters={"rubric": "accuracy"},
+        )
+        d = p.model_dump(mode="json")
+        assert d["node_id"] == "n1"
+        assert d["primitive"] == "critique"
+        assert d["parameters"] == {"rubric": "accuracy"}
+
+    def test_six_primitive_types_constructable(self):
+        from loops.primitives import LoopPrimitive, PrimitiveType
+
+        for pt in PrimitiveType:
+            p = LoopPrimitive(node_id=f"n-{pt.value}", primitive=pt)
+            assert p.primitive == pt
+
+
+class TestPrimitiveOutput:
+    """Tests for :class:`PrimitiveOutput`."""
+
+    def test_default_construction(self):
+        from loops.primitives import PrimitiveOutput
+
+        out = PrimitiveOutput(output="hello")
+        assert out.output == "hello"
+        assert out.score is None
+        assert out.tokens_used == 0
+        assert out.metadata == {}
+
+    def test_serialization_round_trip(self):
+        from loops.primitives import PrimitiveOutput
+
+        out = PrimitiveOutput(
+            output="x", score=7.5, metadata={"k": "v"}
+        )
+        d = out.model_dump()
+        assert d["output"] == "x"
+        assert d["score"] == 7.5
+        assert d["metadata"] == {"k": "v"}
+
+
+class TestPrimitiveExecutor:
+    """Tests for :class:`PrimitiveExecutor`."""
+
+    def test_executor_estimate_cost_branch(self):
+        from loops.primitives import (
+            LoopPrimitive,
+            PrimitiveExecutor,
+            PrimitiveType,
+        )
+
+        executor = PrimitiveExecutor()
+        # Branch primitive's cost is the branch count ``n``.
+        three = LoopPrimitive(
+            node_id="b3",
+            primitive=PrimitiveType.BRANCH,
+            temperature=0.5,
+            parameters={"n": 3},
+        )
+        five = LoopPrimitive(
+            node_id="b5",
+            primitive=PrimitiveType.BRANCH,
+            temperature=0.5,
+            parameters={"n": 5},
+        )
+        assert executor.estimate_cost(three) == 3.0
+        assert executor.estimate_cost(five) == 5.0
+
+    def test_executor_estimate_cost_non_parallel(self):
+        from loops.primitives import (
+            LoopPrimitive,
+            PrimitiveExecutor,
+            PrimitiveType,
+        )
+
+        executor = PrimitiveExecutor()
+        gen = LoopPrimitive(
+            node_id="g", primitive=PrimitiveType.GENERATE, temperature=0.5
+        )
+        crit = LoopPrimitive(
+            node_id="c", primitive=PrimitiveType.CRITIQUE, temperature=0.5
+        )
+        # Non-branch primitives are 1.0 cost units.
+        assert executor.estimate_cost(gen) == 1.0
+        assert executor.estimate_cost(crit) == 1.0
+
+    def test_executor_execute_without_model_raises(self):
+        from loops.primitives import (
+            LoopPrimitive,
+            PrimitiveExecutor,
+            PrimitiveType,
+        )
+
+        executor = PrimitiveExecutor()
+        p = LoopPrimitive(
+            node_id="n1", primitive=PrimitiveType.GENERATE, temperature=0.5
+        )
+        import asyncio
+
+        with pytest.raises(ValueError):
+            asyncio.run(executor.execute(p, task="x", preamble={}))

@@ -1,0 +1,89 @@
+# OpenSwarm — example configuration
+#
+# Copy this file to `config/openswarm.toml` (or `~/.config/openswarm/config.toml`)
+# and edit. Any field can be overridden by an environment variable, e.g.
+# `OPENSWARM_KERNEL__PORT=9000` or `OPENSWARM_AUTH__ENABLED=true`.
+#
+# Run `openswarm config show` to see the effective values after env overrides.
+
+version = "0.1.0"
+
+[kernel]
+host = "127.0.0.1"
+port = 8765
+log_level = "INFO"
+data_dir = "./data"
+
+[dashboard]
+enabled = true
+host = "127.0.0.1"
+port = 8000
+db_path = "./data/dashboard.db"
+enable_aggregator = true
+enable_stream = true
+
+[workers]
+auto_start = true
+include_main_agent = true
+spawn_concurrency = 4
+manifests = [
+  "manifests/coder-python-fast.json",
+  "manifests/reviewer-security-powerful.json",
+  "manifests/researcher-web-standard.json",
+]
+
+[auth]
+enabled = false
+jwt_secret = "change-me-in-production"
+jwt_algorithm = "HS256"
+jwt_ttl_seconds = 3600
+default_user_id = "local-dev"
+default_role = "operator"
+
+[redis]
+enabled = false
+url = "redis://localhost:6379"
+key_prefix = "openswarm:queue"
+socket_timeout_seconds = 2.0
+fallback_to_memory = true
+
+[telegram]
+enabled = false
+bot_token = ""
+allowed_chat_ids = []
+poll_interval_seconds = 1.0
+status_message_ttl_seconds = 60
+
+[billing]
+enabled = true
+db_path = "./data/billing.db"
+
+[billing.default_costs."gpt-4o-mini"]
+input = 0.00015
+output = 0.0006
+
+[billing.default_costs."gpt-4o"]
+input = 0.005
+output = 0.015
+
+[billing.default_costs."claude-haiku-4-5"]
+input = 0.0008
+output = 0.004
+
+[billing.default_costs."claude-sonnet-4-5"]
+input = 0.003
+output = 0.015
+
+[marketplace]
+enabled = true
+db_path = "./data/marketplace.db"
+index_url = "https://marketplace.openswarm.dev/api/v1"
+publish_enabled = false
+publish_token = ""
+local_manifests_dir = "./manifests"
+
+[cli]
+color = true
+show_progress = true
+page_size = 25
+log_tail_lines = 200

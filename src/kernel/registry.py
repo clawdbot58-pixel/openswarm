@@ -1,12 +1,19 @@
-"""SQLite-backed agent registry and audit log.
+"""SQLite-backed agent registry, workflow store, and audit log.
 
-The registry is the kernel's single source of truth for "who is in the
-swarm right now". Two tables back it:
+The registry is the kernel's single source of truth for swarm state.
+Three tables back it:
 
 ``agents``
     One row per registered agent. ``manifest_json`` stores the full
     validated :class:`~kernel.models.AgentManifest` blob so the kernel
     can re-validate permissions without re-asking the agent.
+
+``workflows``
+    One row per workflow the kernel has accepted. The row stores the
+    raw workflow blob (``manifest_json``), the current status, the
+    owner agent, the last step that ran, the wall-clock timestamps,
+    and a structured error blob for the most recent failure. The
+    kernel uses this table to resume in-flight workflows on boot.
 
 ``audit_log``
     Append-only log written by :class:`~kernel.permissions.PermissionEnforcer`
@@ -49,6 +56,21 @@ CREATE TABLE IF NOT EXISTS agents (
 
 CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 
+CREATE TABLE IF NOT EXISTS workflows (
+    workflow_id     TEXT PRIMARY KEY,
+    manifest_json   TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'draft',
+    owner_agent     TEXT,
+    parent_workflow_id TEXT,
+    last_step_id    TEXT,
+    error_json      TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status);
+CREATE INDEX IF NOT EXISTS idx_workflows_owner  ON workflows(owner_agent);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     envelope_id  TEXT,
@@ -67,6 +89,48 @@ CREATE INDEX IF NOT EXISTS idx_audit_time  ON audit_log(timestamp);
 def _utcnow_iso() -> str:
     """Return the current UTC time as an ISO 8601 string with a Z suffix."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _row_to_workflow(row: tuple[Any, ...]) -> dict[str, Any] | None:
+    """Convert a ``workflows`` row to a JSON-friendly dict.
+
+    Returns ``None`` when the row is malformed.
+    """
+    if row is None:
+        return None
+    try:
+        (
+            workflow_id,
+            manifest_json,
+            status,
+            owner_agent,
+            parent_workflow_id,
+            last_step_id,
+            error_json,
+            created_at,
+            updated_at,
+        ) = row
+    except ValueError:
+        return None
+    try:
+        manifest = json.loads(manifest_json) if manifest_json else {}
+    except (TypeError, ValueError):
+        manifest = {}
+    try:
+        error = json.loads(error_json) if error_json else None
+    except (TypeError, ValueError):
+        error = None
+    return {
+        "workflow_id": str(workflow_id),
+        "manifest": manifest,
+        "status": str(status),
+        "owner_agent": owner_agent,
+        "parent_workflow_id": parent_workflow_id,
+        "last_step_id": last_step_id,
+        "error": error,
+        "created_at": str(created_at),
+        "updated_at": str(updated_at),
+    }
 
 
 class AgentRegistry:
@@ -459,6 +523,218 @@ class AgentRegistry:
                 )
         return out
 
+    # -- workflows ---------------------------------------------------------
+
+    # Statuses we treat as "in-flight" on resume. Phase 9 self-healing.
+    RESUMABLE_STATUSES: tuple[str, ...] = (
+        "running",
+        "paused",
+        "recovering",
+    )
+
+    async def upsert_workflow(
+        self,
+        workflow_id: str,
+        manifest: dict[str, Any],
+        *,
+        status: str = "draft",
+        owner_agent: str | None = None,
+        parent_workflow_id: str | None = None,
+        last_step_id: str | None = None,
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        """Insert or update a workflow row.
+
+        The ``manifest`` blob is stored verbatim. ``status`` is the
+        workflow contract enum (``draft``/``submitted``/``running``/
+        ``paused``/``completed``/``failed``/``cancelled``/``recovering``).
+        """
+        now = _utcnow_iso()
+        try:
+            manifest_json = json.dumps(manifest, default=str)
+        except (TypeError, ValueError):
+            manifest_json = json.dumps({"_invalid_manifest": True})
+        error_json: str | None = None
+        if error is not None:
+            try:
+                error_json = json.dumps(error, default=str)
+            except (TypeError, ValueError):
+                error_json = json.dumps({"_invalid_error": True})
+        async with self._write_lock:
+            db = self._require_db()
+            await db.execute(
+                """
+                INSERT INTO workflows
+                    (workflow_id, manifest_json, status, owner_agent,
+                     parent_workflow_id, last_step_id, error_json,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workflow_id) DO UPDATE SET
+                    manifest_json = excluded.manifest_json,
+                    status = excluded.status,
+                    owner_agent = excluded.owner_agent,
+                    parent_workflow_id = excluded.parent_workflow_id,
+                    last_step_id = excluded.last_step_id,
+                    error_json = excluded.error_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    workflow_id,
+                    manifest_json,
+                    status,
+                    owner_agent,
+                    parent_workflow_id,
+                    last_step_id,
+                    error_json,
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+
+    async def get_workflow(self, workflow_id: str) -> dict[str, Any] | None:
+        """Return the full workflow row, or ``None`` if not found."""
+        db = self._require_db()
+        async with db.execute(
+            """
+            SELECT workflow_id, manifest_json, status, owner_agent,
+                   parent_workflow_id, last_step_id, error_json,
+                   created_at, updated_at
+            FROM workflows WHERE workflow_id = ?
+            """,
+            (workflow_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return _row_to_workflow(row)
+
+    async def list_workflows(
+        self,
+        status: str | list[str] | None = None,
+        owner: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Return workflows, optionally filtered by status and owner.
+
+        ``status`` may be a single string or a list of strings (the
+        resume-on-boot scan filters by ``["running", "paused",
+        "recovering"]``). Results are ordered by ``created_at`` and
+        capped at ``limit`` rows.
+        """
+        db = self._require_db()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            if isinstance(status, (list, tuple, set)):
+                placeholders = ",".join("?" for _ in status)
+                clauses.append(f"status IN ({placeholders})")
+                params.extend(status)
+            else:
+                clauses.append("status = ?")
+                params.append(status)
+        if owner is not None:
+            clauses.append("owner_agent = ?")
+            params.append(owner)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = (
+            f"SELECT workflow_id, manifest_json, status, owner_agent, "
+            f"parent_workflow_id, last_step_id, error_json, "
+            f"created_at, updated_at FROM workflows {where} "
+            f"ORDER BY created_at ASC LIMIT ?"
+        )
+        params.append(int(limit))
+        out: list[dict[str, Any]] = []
+        async with db.execute(sql, tuple(params)) as cur:
+            async for row in cur:
+                wf = _row_to_workflow(row)
+                if wf is not None:
+                    out.append(wf)
+        return out
+
+    async def update_workflow_status(
+        self,
+        workflow_id: str,
+        status: str,
+        *,
+        last_step_id: str | None = None,
+        error: dict[str, Any] | None = None,
+        clear_error: bool = False,
+    ) -> None:
+        """Update ``status`` (and optionally ``last_step_id`` / ``error``).
+
+        When ``clear_error`` is True, any existing error blob is wiped.
+        Use this on a successful recovery to reset the error state.
+        """
+        now = _utcnow_iso()
+        error_json: str | None
+        if clear_error:
+            error_json = None
+        elif error is not None:
+            try:
+                error_json = json.dumps(error, default=str)
+            except (TypeError, ValueError):
+                error_json = json.dumps({"_invalid_error": True})
+        else:
+            error_json = None  # leave unchanged
+        async with self._write_lock:
+            db = self._require_db()
+            if last_step_id is None and error is None and not clear_error:
+                await db.execute(
+                    "UPDATE workflows SET status = ?, updated_at = ? "
+                    "WHERE workflow_id = ?",
+                    (status, now, workflow_id),
+                )
+            elif error_json is None and not clear_error:
+                await db.execute(
+                    "UPDATE workflows SET status = ?, "
+                    "last_step_id = ?, updated_at = ? "
+                    "WHERE workflow_id = ?",
+                    (status, last_step_id, now, workflow_id),
+                )
+            else:
+                await db.execute(
+                    "UPDATE workflows SET status = ?, "
+                    "last_step_id = COALESCE(?, last_step_id), "
+                    "error_json = ?, updated_at = ? "
+                    "WHERE workflow_id = ?",
+                    (status, last_step_id, error_json, now, workflow_id),
+                )
+            await db.commit()
+
+    async def delete_workflow(self, workflow_id: str) -> int:
+        """Permanently remove a workflow row. Returns the row count."""
+        async with self._write_lock:
+            db = self._require_db()
+            cur = await db.execute(
+                "DELETE FROM workflows WHERE workflow_id = ?",
+                (workflow_id,),
+            )
+            await db.commit()
+            return int(cur.rowcount or 0)
+
+    async def count_workflows(
+        self,
+        status: str | list[str] | None = None,
+    ) -> int:
+        """Return the number of workflow rows, optionally filtered by status."""
+        db = self._require_db()
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            if isinstance(status, (list, tuple, set)):
+                placeholders = ",".join("?" for _ in status)
+                clauses.append(f"status IN ({placeholders})")
+                params.extend(status)
+            else:
+                clauses.append("status = ?")
+                params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT COUNT(*) FROM workflows {where}"
+        async with db.execute(sql, tuple(params)) as cur:
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
     # -- misc --------------------------------------------------------------
 
     async def count(self, status: StatusLiteral | None = None) -> int:
@@ -491,4 +767,8 @@ class AgentRegistry:
             return False
 
 
-__all__ = ["AgentRegistry", "SCHEMA_SQL"]
+# Module-level alias for tests / external imports.
+RESUMABLE_WORKFLOW_STATUSES: tuple[str, ...] = AgentRegistry.RESUMABLE_STATUSES
+
+
+__all__ = ["AgentRegistry", "RESUMABLE_WORKFLOW_STATUSES", "SCHEMA_SQL"]

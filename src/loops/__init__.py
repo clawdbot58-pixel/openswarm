@@ -2,9 +2,18 @@
 
 Implements various reasoning patterns for agent workers.
 Phase 4 adds dynamic loop assembly with primitives, graphs, and registry.
+Phase 10 adds the Pydantic-style LoopPrimitive / LoopGraph facade plus
+the Critic, TrialStore, MetaAgent and LoopOptimizer on top.
 """
 
-from .assembler import LoopAssembler, PrebuiltGraphs
+from .assembler import (
+    AssemblerError,
+    LoopAssembler,
+    LoopGraph as PydanticLoopGraph,
+    LoopEdge as PydanticLoopEdge,
+    PrebuiltGraphs,
+    StopConditionError,
+)
 from .base_loop import BaseLoop, LoopResult
 from .cot import CoTLoop
 from .debate import DebateLoop
@@ -29,10 +38,14 @@ from .primitives import (
     BranchPrimitive,
     CritiquePrimitive,
     GeneratePrimitive,
+    LoopPrimitive,
     MergePrimitive,
     Primitive,
     PrimitiveContext,
+    PrimitiveExecutor,
+    PrimitiveOutput,
     PrimitiveResult,
+    PrimitiveType,
     RevisePrimitive,
     VotePrimitive,
     get_primitive,
@@ -45,6 +58,7 @@ from .tool_executor import ToolExecutor, ToolResult
 from .tree import TreeOfThoughtsLoop
 
 __all__ = [
+    "AssemblerError",
     "BaseLoop",
     "LoopResult",
     "CoTLoop",
@@ -57,9 +71,12 @@ __all__ = [
     "LoopAssembler",
     "LoopEdge",
     "LoopGraph",
+    "PydanticLoopEdge",
+    "PydanticLoopGraph",
     "LoopNode",
     "LoopOptimizer",
     "LoopRecommendation",
+    "LoopPrimitive",
     "LoopRegistry",
     "LoopRouter",
     "LoopStats",
@@ -71,7 +88,10 @@ __all__ = [
     "PrebuiltGraphs",
     "Primitive",
     "PrimitiveContext",
+    "PrimitiveExecutor",
+    "PrimitiveOutput",
     "PrimitiveResult",
+    "PrimitiveType",
     "ContextAssembler",
     "PermissionOverrideError",
     "PreambleAssembler",
@@ -87,6 +107,7 @@ __all__ = [
     "RevisePrimitive",
     "run_loop",
     "run_custom_loop",
+    "StopConditionError",
     "ToolExecutor",
     "ToolResult",
     "TreeOfThoughtsLoop",

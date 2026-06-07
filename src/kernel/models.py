@@ -637,6 +637,17 @@ KERNEL_EVENT_NAMES: frozenset[str] = frozenset(
         "auto_restart_triggered",
         "envelope_rejected",
         "registration_rejected",
+        # Phase 9 self-healing events. The bus surfaces these to the
+        # Main Agent so it can decide the recovery strategy.
+        "loop_detected",
+        "step_timeout",
+        "budget_exhausted",
+        "workflow_resume",
+        "step_recovered",
+        "fallback_invoked",
+        "compensation_invoked",
+        "respawn_requested",
+        "escalation_requested",
     }
 )
 

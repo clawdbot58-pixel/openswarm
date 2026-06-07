@@ -1,0 +1,262 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ----------------------------------------------------------------------- */
+/* Base layer                                                              */
+/* ----------------------------------------------------------------------- */
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    font-feature-settings: "ss01", "cv11", "tnum";
+    background:
+      radial-gradient(1200px 600px at 12% -8%, rgba(245, 165, 36, 0.06), transparent 60%),
+      radial-gradient(900px 500px at 92% 110%, rgba(168, 85, 247, 0.04), transparent 65%),
+      linear-gradient(180deg, #0a0a0c 0%, #0d0d11 100%);
+    background-attachment: fixed;
+    min-height: 100dvh;
+  }
+
+  ::selection {
+    background: rgba(245, 165, 36, 0.35);
+    color: #f4f4f7;
+  }
+
+  /* Subtle grain for premium depth — fixed, pointer-events-none per perf rules. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    pointer-events: none;
+    opacity: 0.025;
+    mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' seed='4'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.7 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  }
+
+  /* Custom scrollbars — slim, warm-on-zinc. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(245, 165, 36, 0.25);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+  }
+}
+
+/* ----------------------------------------------------------------------- */
+/* Component layer                                                         */
+/* ----------------------------------------------------------------------- */
+
+@layer components {
+  /* The base surface for any panel / card.  Tinted shadow keeps the
+     elevation believable without screaming "card". */
+  .surface {
+    @apply bg-ink-900/60 border border-ink-700/60 rounded-2xl backdrop-blur-[2px];
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 16px 40px -28px rgba(0, 0, 0, 0.6);
+  }
+
+  .surface-quiet {
+    @apply bg-ink-900/30 border border-ink-700/40 rounded-2xl;
+  }
+
+  .panel-title {
+    @apply text-[11px] uppercase tracking-[0.18em] font-medium text-ink-300;
+  }
+
+  .data-label {
+    @apply text-xs font-medium uppercase tracking-[0.14em] text-ink-300;
+  }
+
+  .data-value {
+    @apply text-2xl font-display font-semibold text-ink-50 tabular-nums tracking-tight;
+  }
+
+  .data-value-sm {
+    @apply text-base font-display font-medium text-ink-100 tabular-nums;
+  }
+
+  .hairline {
+    @apply border-t border-ink-700/60;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium;
+  }
+
+  .focus-ring {
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-amber-glow/60 focus-visible:ring-offset-2 focus-visible:ring-offset-ink-950;
+  }
+
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.04) 0%,
+      rgba(255, 255, 255, 0.08) 50%,
+      rgba(255, 255, 255, 0.04) 100%
+    );
+    background-size: 200% 100%;
+    @apply animate-shimmer rounded-md;
+  }
+}
+
+/* ----------------------------------------------------------------------- */
+/* Utilities                                                               */
+/* ----------------------------------------------------------------------- */
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  .text-pretty {
+    text-wrap: pretty;
+  }
+  /* Scan-line overlay used in the swarm overview header. */
+  .scanline {
+    background: linear-gradient(
+      180deg,
+      transparent 0%,
+      rgba(245, 165, 36, 0.06) 50%,
+      transparent 100%
+    );
+    animation: scan 3.2s linear infinite;
+  }
+}
+
+/* ----------------------------------------------------------------------- */
+/* react-grid-layout overrides — match our dark, rounded surface.         */
+/* ----------------------------------------------------------------------- */
+
+.react-grid-item.react-grid-placeholder {
+  background: rgba(245, 165, 36, 0.12) !important;
+  border: 1px dashed rgba(245, 165, 36, 0.4) !important;
+  border-radius: 16px !important;
+  opacity: 1 !important;
+  transition-duration: 120ms !important;
+}
+
+.react-grid-item > .react-resizable-handle {
+  background-image: none !important;
+  width: 14px;
+  height: 14px;
+}
+
+.react-grid-item > .react-resizable-handle::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid rgba(245, 165, 36, 0.4);
+  border-bottom: 2px solid rgba(245, 165, 36, 0.4);
+  border-bottom-right-radius: 2px;
+  transition: border-color 180ms ease;
+}
+
+.react-grid-item:hover > .react-resizable-handle::after {
+  border-color: rgba(245, 165, 36, 0.8);
+}
+
+.react-grid-item.cssTransforms {
+  transition-property: transform, box-shadow;
+}
+
+.react-grid-item.react-draggable-dragging {
+  transition: none;
+  z-index: 10;
+  cursor: grabbing;
+}
+
+.react-grid-item.react-grid-placeholder {
+  z-index: 0;
+}
+
+/* React-flow node theming. */
+.react-flow__node {
+  font-family: inherit;
+}
+
+.react-flow__edge-path {
+  stroke: rgba(245, 165, 36, 0.45);
+  stroke-width: 1.5;
+}
+
+.react-flow__edge.animated path {
+  stroke: rgba(245, 165, 36, 0.85);
+  stroke-dasharray: 5;
+  animation: edge-flow 0.9s linear infinite;
+}
+
+@keyframes edge-flow {
+  from {
+    stroke-dashoffset: 10;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.react-flow__controls {
+  background: rgba(16, 16, 19, 0.7);
+  border: 1px solid rgba(35, 35, 44, 0.6);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+}
+
+.react-flow__controls-button {
+  background: transparent;
+  border: none;
+  color: #b8b8c4;
+  border-bottom: 1px solid rgba(35, 35, 44, 0.5);
+}
+
+.react-flow__controls-button:hover {
+  background: rgba(245, 165, 36, 0.1);
+  color: #f5a524;
+}
+
+.react-flow__background {
+  background-color: transparent;
+}
+
+.react-flow__attribution {
+  background: transparent !important;
+  color: rgba(138, 138, 153, 0.5) !important;
+  font-size: 10px !important;
+}
+
+/* ----------------------------------------------------------------------- */
+/* Reduced motion                                                          */
+/* ----------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
