@@ -161,6 +161,8 @@ class _PersistedState:
     processes: dict[str, dict] = field(default_factory=dict)
     started_at: float = field(default_factory=time.time)
     cli_version: str = "0.1.0"
+    kernel_url: str | None = None
+    dashboard_url: str | None = None
 
 
 class _StateStore:
@@ -187,6 +189,8 @@ class _StateStore:
             processes=data.get("processes", {}),
             started_at=float(data.get("started_at", time.time())),
             cli_version=data.get("cli_version", "0.1.0"),
+            kernel_url=data.get("kernel_url"),
+            dashboard_url=data.get("dashboard_url"),
         )
 
     def save(self, state: _PersistedState) -> None:
@@ -328,8 +332,35 @@ class ProcessManager:
         env["OPENSWARM_DB_PATH"] = str(self._data / "registry.db")
         env["KERNEL_WS"] = f"ws://{kernel_host}:{kernel_port}/ws"
         env["KERNEL_REST_URL"] = f"http://{kernel_host}:{kernel_port}"
+        agent_ws = self._root / "workspaces" / "agent"
+        agent_ws.mkdir(parents=True, exist_ok=True)
+        env["OPENSWARM_AGENT_WORKSPACE"] = str(agent_ws)
+        env["OPENSWARM_HARNESS_DIR"] = str(self._data / "workspaces")
+        if config.dashboard:
+            env["OPENSWARM_DASHBOARD_URL"] = f"http://{dashboard_host}:{dashboard_port}/ui/"
+
+        # Propagate secrets from unified config / .env into child env.
+        try:
+            from config import get_config
+
+            cfg = get_config()
+            if cfg.telegram.bot_token:
+                env["TELEGRAM_BOT_TOKEN"] = cfg.telegram.bot_token
+                env["OPENSWARM_TELEGRAM__BOT_TOKEN"] = cfg.telegram.bot_token
+            if cfg.websearch.api_key:
+                env["EXA_API_KEY"] = cfg.websearch.api_key
+            env.setdefault("OPENSWARM_LLM_PROFILE", cfg.llm.profile)
+        except Exception:  # noqa: BLE001
+            pass
 
         started: list[ProcessInfo] = []
+
+        try:
+            from workspace.taskboard import ensure_agent_workspace
+
+            ensure_agent_workspace(self._root)
+        except Exception:  # noqa: BLE001
+            pass
 
         if config.kernel:
             info = self._spawn_kernel(env, kernel_port)
@@ -347,6 +378,10 @@ class ProcessManager:
 
         if config.dashboard:
             info = self._spawn_dashboard(env, dashboard_port)
+            started.append(info)
+
+        if config.kernel:
+            info = self._spawn_conductor(env)
             started.append(info)
 
         for manifest in config.workers:
@@ -367,6 +402,11 @@ class ProcessManager:
         state = self._state.load()
         for proc in started:
             state.processes[proc.label] = self._proc_to_dict(proc)
+        kernel_host = env.get("OPENSWARM_KERNEL_HOST", "127.0.0.1")
+        dash_host = env.get("OPENSWARM_DASHBOARD__HOST", "127.0.0.1")
+        state.kernel_url = f"http://{kernel_host}:{kernel_port}"
+        if config.dashboard:
+            state.dashboard_url = f"http://{dash_host}:{dashboard_port}"
         self._state.save(state)
 
         # Give children a beat to bind their sockets; users get fewer
@@ -570,6 +610,20 @@ class ProcessManager:
         )
         return info
 
+    def _spawn_conductor(self, env: dict[str, str]) -> ProcessInfo:
+        cmd = [
+            _python_executable(),
+            "-m",
+            "agents.conductor",
+        ]
+        return self._popen(
+            cmd,
+            env=env,
+            label="conductor",
+            kind=ProcessKind.WORKER,
+            extra={"role": "conductor"},
+        )
+
     def _spawn_main_agent(self, env: dict[str, str]) -> ProcessInfo:
         cmd = [
             _python_executable(),
@@ -612,6 +666,9 @@ class ProcessManager:
         path = Path(manifest)
         if path.is_absolute() and path.is_file():
             return str(path)
+        candidate = (self._root / manifest).resolve()
+        if candidate.is_file():
+            return str(candidate)
         candidate = (self._root / "manifests" / manifest).resolve()
         if candidate.is_file():
             return str(candidate)

@@ -693,6 +693,66 @@ class Conductor(BaseAgent):
         return data
 
 
+def load_conductor_manifest(
+    path: str | Path = "manifests/conductor.json",
+) -> Any:
+    """Load the Conductor manifest from disk."""
+    from kernel.models import AgentManifest
+
+    raw = Path(path).read_text(encoding="utf-8")
+    return AgentManifest.model_validate(json.loads(raw))
+
+
+async def run_daemon() -> None:
+    """Run the Conductor as a long-lived background process."""
+    import logging
+    import os
+    import signal
+
+    from agents.llm_setup import build_llm_client_from_section
+    from config import get_config
+
+    logging.basicConfig(
+        level=os.environ.get("OPENSWARM_LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    cfg = get_config()
+    manifest_path = os.environ.get("CONDUCTOR_MANIFEST_PATH", "manifests/conductor.json")
+    ws_url = os.environ.get("KERNEL_WS", "ws://127.0.0.1:8765/ws")
+    llm = build_llm_client_from_section(cfg.llm)
+    conductor = Conductor(
+        load_conductor_manifest(manifest_path),
+        llm=llm,
+        ws_url=ws_url,
+    )
+    await conductor.start()
+    logger.info("conductor connected to %s", ws_url)
+
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except (NotImplementedError, RuntimeError):
+            pass
+    try:
+        await stop.wait()
+    finally:
+        await conductor.close()
+
+
+def main() -> None:
+    """Entry point for ``python -m agents.conductor``."""
+    try:
+        asyncio.run(run_daemon())
+    except KeyboardInterrupt:
+        return
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
+
+
 __all__ = [
     "CONDUCTOR_AGENT_ID",
     "Conductor",
@@ -707,4 +767,7 @@ __all__ = [
     "SUBSCRIBED_EVENTS",
     "Workflow",
     "WorkflowNode",
+    "load_conductor_manifest",
+    "main",
+    "run_daemon",
 ]

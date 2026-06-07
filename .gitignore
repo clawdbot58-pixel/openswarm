@@ -18,6 +18,21 @@ heartbeats/
 *.db-wal
 *.db-shm
 .env
+config/openswarm.toml
+config/user.yaml
+
+# Frontend build artifacts
+src/dashboard/frontend/node_modules/
+src/dashboard/frontend/dist/
+*.tsbuildinfo
+
+# Python packaging
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# Reference vendored copy (lives beside repo on Desktop)
+resources/reference/
 
 # Editor
 .vscode/

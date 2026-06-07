@@ -37,22 +37,34 @@ def mock_pm() -> MagicMock:
 @pytest.fixture
 def mock_config(tmp_path: Path) -> MagicMock:
     """Return a mocked :class:`OpenSwarmConfig`."""
-    from config import OpenSwarmConfig
-
-    cfg = OpenSwarmConfig()
-    cfg._project_root = tmp_path
+    cfg = MagicMock()
+    cfg.project_root = tmp_path
+    cfg.kernel.data_dir = tmp_path / "data"
+    cfg.dashboard.db_path = tmp_path / "data" / "dashboard.db"
+    cfg.billing.db_path = tmp_path / "data" / "billing.db"
+    cfg.marketplace.db_path = tmp_path / "data" / "marketplace.db"
+    cfg.workers.manifests = ["coder-python-fast.json"]
+    cfg.telegram.enabled = False
+    cfg.cli.color = True
+    cfg.to_toml.return_value = "[kernel]\nport = 8765\n"
     return cfg
 
 
 class TestInit:
-    def test_init_creates_directories(self, runner: CliRunner, tmp_path: Path) -> None:
-        result = runner.invoke(cli, ["init"], obj={"config": None, "pm": None})
+    def test_init_creates_directories(
+        self, runner: CliRunner, mock_config: MagicMock, tmp_path: Path
+    ) -> None:
+        mock_config.project_root = tmp_path
+        result = runner.invoke(cli, ["init"], obj={"config": mock_config, "pm": None})
         assert result.exit_code == 0
         assert (tmp_path / "data").is_dir()
         assert (tmp_path / "workspaces").is_dir()
 
-    def test_init_creates_config_file(self, runner: CliRunner, tmp_path: Path) -> None:
-        result = runner.invoke(cli, ["init"], obj={"config": None, "pm": None})
+    def test_init_creates_config_file(
+        self, runner: CliRunner, mock_config: MagicMock, tmp_path: Path
+    ) -> None:
+        mock_config.project_root = tmp_path
+        result = runner.invoke(cli, ["init"], obj={"config": mock_config, "pm": None})
         assert result.exit_code == 0
         config_path = tmp_path / "config" / "openswarm.toml"
         assert config_path.is_file()
@@ -288,6 +300,7 @@ class TestConfig:
         config_path = tmp_path / "config" / "openswarm.toml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text("[kernel]\nport = 8765\n", encoding="utf-8")
+        mock_config.to_toml.return_value = "[kernel]\nport = 9000\n"
 
         result = runner.invoke(
             cli,

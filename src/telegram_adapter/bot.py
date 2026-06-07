@@ -30,6 +30,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -86,10 +87,13 @@ class BotConfig:
 
     token: str
     kernel_url: str = "http://127.0.0.1:8765"
+    dashboard_url: str | None = None
+    agent_workspace: Path | None = None
     allowed_chat_ids: list[int] | None = None
     poll_interval_seconds: float = 1.0
     request_timeout_seconds: float = 5.0
-    status_message_ttl_seconds: int = 60
+    status_message_ttl_seconds: int = 120
+    notify_on_start: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +133,44 @@ class _KernelClient:
             ) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception:  # noqa: BLE001
+            return None
+
+    def chat(
+        self,
+        message: str,
+        *,
+        session_id: str,
+        timeout: float = 120.0,
+    ) -> dict[str, Any] | None:
+        """Send a conversational turn and wait for the main agent reply."""
+        import urllib.error
+        import urllib.request
+
+        body = json.dumps(
+            {
+                "message": message,
+                "session_id": session_id,
+                "timeout_seconds": timeout,
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(  # noqa: S310
+            f"{self._base}/chat",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout + 5.0) as resp:  # noqa: S310
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            logger.warning("kernel chat error: %s", exc)
+            try:
+                detail = json.loads(exc.read().decode("utf-8"))
+                return {"reply": detail.get("message", str(exc)), "status": "failed"}
+            except Exception:  # noqa: BLE001
+                return {"reply": str(exc), "status": "failed"}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("kernel chat unreachable: %s", exc)
             return None
 
     def submit_goal(self, goal: str, model: str | None) -> dict[str, Any] | None:
@@ -181,28 +223,32 @@ class TelegramFormatter:
     @staticmethod
     def welcome() -> str:
         return (
-            "👋 *Welcome to OpenSwarm!*\n\n"
-            "I'm a thin shell around the swarm — every command you send "
-            "translates into a kernel call. Quick reference:\n\n"
-            "  /start — this message\n"
-            "  /status — swarm health\n"
-            "  /run \\<goal\\> — execute a goal\n"
-            "  /logs — stream recent kernel logs\n"
-            "  /help — show commands again\n\n"
-            "Or just send me a message — I'll treat it as a goal."
+            "👋 *OpenSwarm is running*\n\n"
+            "Talk to me like a colleague — no slash commands required.\n\n"
+            "Examples:\n"
+            "• *Create a Python agent that reviews pull requests*\n"
+            "• *What's the swarm doing?*\n"
+            "• *Show my tasks*\n\n"
+            "I queue work, spin up agents, and you can watch everything "
+            "on the dashboard."
         )
 
     @staticmethod
     def help() -> str:
         return (
-            "*Commands*\n"
-            "/start — show welcome\n"
-            "/status — show swarm status\n"
-            "/run \\<goal\\> — run a goal synchronously\n"
-            "/async \\<goal\\> — run a goal asynchronously\n"
-            "/logs — show the last kernel events\n"
-            "/cancel \\<id\\> — cancel a workflow (best effort)\n\n"
-            "Anything else is forwarded to the main agent as a goal."
+            "*Just type naturally.*\n\n"
+            "• Ask for work: *build a login page*, *research TypeScript patterns*\n"
+            "• Ask for agents: *create a coder and a reviewer*\n"
+            "• Check in: *status*, *tasks*, *what's running?*\n\n"
+            "Open the dashboard in your browser to observe agents live."
+        )
+
+    @staticmethod
+    def started(dashboard_url: str | None = None) -> str:
+        dash = f"\nDashboard: `{dashboard_url}`" if dashboard_url else ""
+        return (
+            "🟢 *OpenSwarm started*\n\n"
+            "I'm online. Just message me — I'll reply here in real time." + dash
         )
 
     @staticmethod
@@ -278,6 +324,9 @@ class OpenSwarmBot:
         )
         self._formatter = TelegramFormatter()
         self._application: Any | None = None
+        self._dashboard_url = config.dashboard_url
+        self._agent_workspace = config.agent_workspace
+        self._active_turns: dict[int, str] = {}
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -312,6 +361,8 @@ class OpenSwarmBot:
             poll_interval=self._config.poll_interval_seconds
         )
         logger.info("telegram bot started")
+        if self._config.notify_on_start:
+            await self._notify_startup()
 
     async def stop(self) -> None:
         if self._application is None:
@@ -416,19 +467,16 @@ class OpenSwarmBot:
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
-        await self._submit(update, prompt, async_=False)
+        await self._converse(update, context, prompt)
 
     async def _cmd_async(self, update: Any, context: Any) -> None:
         if not self._is_allowed(update):
             return
         prompt = " ".join(context.args or []).strip()
         if not prompt:
-            await update.message.reply_text(
-                "Usage: `/async <goal>`",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            await update.message.reply_text("Tell me what you want.")
             return
-        await self._submit(update, prompt, async_=True)
+        await self._converse(update, context, prompt)
 
     async def _cmd_cancel(self, update: Any, context: Any) -> None:
         if not self._is_allowed(update):
@@ -451,59 +499,133 @@ class OpenSwarmBot:
             parse_mode=ParseMode.MARKDOWN,
         )
 
+    async def _notify_startup(self) -> None:
+        """Tell allowed chats that OpenSwarm is up (OpenClaw-style ping)."""
+        if self._application is None or not self._config.allowed_chat_ids:
+            return
+        text = self._formatter.started(self._dashboard_url)
+        for chat_id in self._config.allowed_chat_ids:
+            try:
+                await self._application.bot.send_message(
+                    chat_id=chat_id,
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("startup notify to %s failed: %s", chat_id, exc)
+
     async def _on_text(self, update: Any, context: Any) -> None:
         if not self._is_allowed(update):
             return
         text = (update.message.text or "").strip()
         if not text:
             return
-        await self._submit(update, text, async_=True)
+        lowered = text.lower()
+        if lowered in {"help", "?", "what can you do"}:
+            await update.message.reply_text(
+                self._formatter.help(), parse_mode=ParseMode.MARKDOWN
+            )
+            return
+        if lowered in {"status", "how are you", "how's it going"} or "how are" in lowered:
+            await self._cmd_status(update, context)
+            return
+        if lowered in {"tasks", "taskboard", "my tasks", "show tasks"}:
+            await self._show_tasks(update)
+            return
+        await self._converse(update, context, text)
 
-    async def _submit(self, update: Any, goal: str, *, async_: bool) -> None:
+    async def _show_tasks(self, update: Any) -> None:
+        from workspace.taskboard import format_taskboard_preview
+
+        ws = self._agent_workspace or Path("workspaces/agent")
+        preview = format_taskboard_preview(ws)
+        await update.message.reply_text(
+            f"📋 *Active tasks*\n\n{preview}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    async def _converse(self, update: Any, context: Any, text: str) -> None:
+        """Hermes-style conversation — typing indicator, real reply, steering."""
         if not self._client.health():
             await update.message.reply_text(
-                "🔴 *OpenSwarm is not running.*\n\n"
-                "Start it on the host with `openswarm start`.",
-                parse_mode=ParseMode.MARKDOWN,
+                "🔴 OpenSwarm is not running.\n\nRun `openswarm start` on the host.",
             )
             return
-        result = self._client.submit_goal(goal, model=None)
+
+        chat = update.effective_chat
+        if chat is None:
+            return
+        session_id = f"telegram:{chat.id}"
+
+        # Typing indicator for the whole turn (OpenClaw-style feedback).
+        try:
+            from telegram.constants import ChatAction  # type: ignore[import-not-found]
+
+            await context.bot.send_chat_action(
+                chat_id=chat.id, action=ChatAction.TYPING
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        typing_task: asyncio.Task | None = None
+        try:
+            from telegram.constants import ChatAction  # type: ignore[import-not-found]
+
+            async def _keep_typing() -> None:
+                while True:
+                    try:
+                        await context.bot.send_chat_action(
+                            chat_id=chat.id, action=ChatAction.TYPING
+                        )
+                    except Exception:  # noqa: BLE001
+                        break
+                    await asyncio.sleep(4.0)
+
+            typing_task = asyncio.create_task(_keep_typing())
+        except Exception:  # noqa: BLE001
+            typing_task = None
+
+        self._active_turns[chat.id] = session_id
+        try:
+            result = await asyncio.to_thread(
+                self._client.chat,
+                text,
+                session_id=session_id,
+                timeout=float(self._config.status_message_ttl_seconds),
+            )
+        finally:
+            self._active_turns.pop(chat.id, None)
+            if typing_task is not None:
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
+
         if result is None:
             await update.message.reply_text(
-                "❌ *Kernel rejected the goal.* Check the host's "
-                "`openswarm logs` for the reason.",
-                parse_mode=ParseMode.MARKDOWN,
+                "I couldn't reach the kernel. Try `openswarm status` on the host.",
             )
             return
-        workflow_id = result.get("workflow_id") or result.get("id") or "?"
-        await update.message.reply_text(
-            self._formatter.goal_received(workflow_id),
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        if async_:
+
+        if result.get("status") == "steered":
+            await update.message.reply_text(result.get("reply", "Noted — steering."))
             return
-        # Sync mode: poll the workflow status with a short timeout.
-        deadline = time.time() + self._config.status_message_ttl_seconds
-        last_state = None
-        while time.time() < deadline:
-            wf = self._client.get_workflow(workflow_id)
-            if wf is None:
-                break
-            state = wf.get("status", "unknown")
-            if state != last_state:
-                last_state = state
-            if state in {"completed", "done", "failed", "cancelled"}:
-                await update.message.reply_text(
-                    self._formatter.goal_completed(wf),
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-                return
-            time.sleep(0.5)
-        await update.message.reply_text(
-            f"⏳ Workflow `{workflow_id}` still running. "
-            "Use /status to check in.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+
+        reply = str(result.get("reply") or "").strip()
+        if not reply:
+            reply = "I'm here, but I didn't get a response back. Try again?"
+
+        if self._agent_workspace:
+            try:
+                from workspace.taskboard import queue_goal
+
+                queue_goal(self._agent_workspace, text, source="telegram")
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Plain text — LLM replies often include markdown that breaks Telegram.
+        await update.message.reply_text(reply[:4000])
 
 
 # ---------------------------------------------------------------------------
@@ -518,9 +640,30 @@ async def _run_bot() -> None:
     from config import get_config
 
     cfg = get_config()
+    kernel_url = os.environ.get(
+        "KERNEL_REST_URL",
+        f"http://127.0.0.1:{cfg.kernel.port}",
+    )
+    dashboard_url = os.environ.get("OPENSWARM_DASHBOARD_URL")
+    if not dashboard_url:
+        dash_port = os.environ.get("OPENSWARM_DASHBOARD_PORT", str(cfg.dashboard.port))
+        dashboard_url = f"http://127.0.0.1:{dash_port}/ui/"
+    agent_ws = Path(
+        os.environ.get(
+            "OPENSWARM_AGENT_WORKSPACE",
+            str(cfg.workspace.agent_dir),
+        )
+    )
+    token = (
+        os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        or cfg.telegram.bot_token.strip()
+        or os.environ.get("OPENSWARM_TELEGRAM__BOT_TOKEN", "").strip()
+    )
     bot_cfg = BotConfig(
-        token=cfg.telegram.bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-        kernel_url=f"http://127.0.0.1:{cfg.kernel.port}",
+        token=token,
+        kernel_url=kernel_url.rstrip("/"),
+        dashboard_url=dashboard_url,
+        agent_workspace=agent_ws,
         allowed_chat_ids=list(cfg.telegram.allowed_chat_ids),
         poll_interval_seconds=cfg.telegram.poll_interval_seconds,
         status_message_ttl_seconds=cfg.telegram.status_message_ttl_seconds,

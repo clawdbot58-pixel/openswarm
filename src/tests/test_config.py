@@ -24,7 +24,7 @@ from config import (
 
 
 def test_default_config_is_well_formed() -> None:
-    cfg = OpenSwarmConfig()
+    cfg = OpenSwarmConfig(_env_file=None)  # type: ignore[call-arg]
     assert cfg.version == "0.1.0"
     assert cfg.kernel.port == 8765
     assert cfg.dashboard.port == 8000

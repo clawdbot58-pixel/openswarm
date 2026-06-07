@@ -700,10 +700,38 @@ def _signal_handler(app: FastAPI) -> None:
 # ---------------------------------------------------------------------------
 
 
-# A module-level app is convenient for `uvicorn dashboard.backend.main:app`
-# when the kernel is in the same process (rare, but supported).
+def _build_default_app() -> FastAPI:
+    """Production app: HTTP introspection when ``KERNEL_REST_URL`` is set."""
+    import os
+    from pathlib import Path
+
+    kernel_url = os.environ.get("KERNEL_REST_URL", "").strip()
+    if kernel_url:
+        from .http_introspection import HttpIntrospectionAPI
+
+        project_root = Path(
+            os.environ.get("OPENSWARM_PROJECT_ROOT", Path.cwd())
+        ).resolve()
+        agent_ws = project_root / "workspaces" / "agent"
+        harness_dir = Path(
+            os.environ.get("OPENSWARM_HARNESS_DIR", project_root / "data" / "workspaces")
+        )
+        intro = HttpIntrospectionAPI(
+            kernel_url,
+            workspaces_dir=agent_ws if agent_ws.is_dir() else None,
+            harness_dir=harness_dir,
+        )
+        return create_dashboard_app(
+            introspection=intro,
+            enable_aggregator=True,
+            enable_stream=True,
+        )
+    return create_dashboard_app(enable_aggregator=False, enable_stream=False)
+
+
+# A module-level app is convenient for `uvicorn dashboard.backend.main:app`.
 # Tests build their own app via :func:`create_dashboard_app`.
-app: FastAPI = create_dashboard_app(enable_aggregator=False, enable_stream=False)
+app: FastAPI = _build_default_app()
 
 
 # ---------------------------------------------------------------------------

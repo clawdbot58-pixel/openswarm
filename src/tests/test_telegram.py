@@ -20,22 +20,19 @@ class TestBotConfig:
         assert cfg.token == "test-token"
         assert cfg.kernel_url == "http://127.0.0.1:8765"
         assert cfg.poll_interval_seconds == 1.0
-        assert cfg.status_message_ttl_seconds == 60
+        assert cfg.status_message_ttl_seconds == 120
 
 
 class TestTelegramFormatter:
     def test_welcome_message(self) -> None:
         msg = TelegramFormatter.welcome()
-        assert "Welcome to OpenSwarm" in msg
-        assert "/start" in msg
-        assert "/status" in msg
-        assert "/run" in msg
+        assert "OpenSwarm" in msg
+        assert "no slash" in msg.lower() or "plain" in msg.lower()
 
     def test_help_message(self) -> None:
         msg = TelegramFormatter.help()
-        assert "/start" in msg
-        assert "/status" in msg
-        assert "/run" in msg
+        assert "naturally" in msg.lower() or "type" in msg.lower()
+        assert "dashboard" in msg.lower()
 
     def test_status_running(self) -> None:
         metrics = {

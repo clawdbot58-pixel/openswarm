@@ -27,10 +27,22 @@ auto_start = true
 include_main_agent = true
 spawn_concurrency = 4
 manifests = [
-  "manifests/coder-python-fast.json",
-  "manifests/reviewer-security-powerful.json",
-  "manifests/researcher-web-standard.json",
+  "coder-python-fast.json",
+  "reviewer-security-powerful.json",
+  "researcher-web-standard.json",
 ]
+
+[llm]
+profile = "auto"
+max_retries = 2
+
+[workspace]
+agent_dir = "./workspaces/agent"
+harness_dir = "./data/workspaces"
+
+[websearch]
+enabled = true
+provider = "exa"
 
 [auth]
 enabled = false

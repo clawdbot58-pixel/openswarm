@@ -80,6 +80,9 @@ def create_app(settings: KernelSettings | None = None) -> FastAPI:
         app.state.permissions = permissions
         app.state.bus = bus
         app.state.heartbeat = heartbeat
+        from .chat_store import ChatStore
+
+        app.state.chat_store = ChatStore()
 
         # Phase 11: opt-in auth. Local dev (the default) leaves this
         # disabled; setting OPENSWARM_AUTH__ENABLED=true wires the

@@ -117,9 +117,9 @@ class WorkersSection(BaseModel):
     auto_start: bool = True
     manifests: list[str] = Field(
         default_factory=lambda: [
-            "manifests/coder-python-fast.json",
-            "manifests/reviewer-security-powerful.json",
-            "manifests/researcher-web-standard.json",
+            "coder-python-fast.json",
+            "reviewer-security-powerful.json",
+            "researcher-web-standard.json",
         ]
     )
     include_main_agent: bool = True
@@ -184,6 +184,32 @@ class TelegramSection(BaseModel):
     enabled: bool = False
     bot_token: str = ""
     allowed_chat_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("bot_token", mode="before")
+    @classmethod
+    def _token_from_env(cls, value: str) -> str:
+        return value or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+
+    @field_validator("allowed_chat_ids", mode="before")
+    @classmethod
+    def _parse_chat_ids(cls, value: object) -> list[int]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return [int(v) for v in value]
+        if isinstance(value, int):
+            return [value]
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            if text.startswith("["):
+                import json
+
+                parsed = json.loads(text)
+                return [int(v) for v in parsed]
+            return [int(part.strip()) for part in text.split(",") if part.strip()]
+        return []
     poll_interval_seconds: float = 1.0
     status_message_ttl_seconds: int = 60
 
@@ -245,6 +271,52 @@ class CLISection(BaseModel):
     log_tail_lines: int = 200
 
 
+class LLMRoute(BaseModel):
+    """One hop in the LLM fallback chain."""
+
+    provider: str = "mock"
+    model: str = "mock-model"
+
+
+class LLMSection(BaseModel):
+    """LLM provider profile for agents.
+
+    * ``profile=auto`` — NIM if ``NVIDIA_API_KEY`` is set, else Ollama,
+      else mock.
+    * ``profile=nim`` — NVIDIA NIM (24/7).
+    * ``profile=ollama`` — local Ollama (fast testing).
+    """
+
+    profile: Literal["auto", "nim", "ollama", "mock", "openai", "anthropic"] = "auto"
+    routes: list[LLMRoute] = Field(default_factory=list)
+    max_retries: int = 2
+
+
+class WorkspaceSection(BaseModel):
+    """User-facing agent workspace (markdown, scripts, taskboard)."""
+
+    agent_dir: Path = PROJECT_ROOT / "workspaces" / "agent"
+    harness_dir: Path = PROJECT_ROOT / "data" / "workspaces"
+
+    @field_validator("agent_dir", "harness_dir", mode="after")
+    @classmethod
+    def _resolve_workspace_path(cls, value: Path) -> Path:
+        return Path(os.path.expanduser(str(value))).resolve()
+
+
+class WebSearchSection(BaseModel):
+    """Web search (Exa) — optional skill."""
+
+    enabled: bool = True
+    provider: str = "exa"
+    api_key: str = ""
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _api_key_from_env(cls, value: str) -> str:
+        return value or os.environ.get("EXA_API_KEY", "")
+
+
 # ---------------------------------------------------------------------------
 # Root
 # ---------------------------------------------------------------------------
@@ -278,6 +350,9 @@ class OpenSwarmConfig(BaseSettings):
     billing: BillingSection = Field(default_factory=BillingSection)
     marketplace: MarketplaceSection = Field(default_factory=MarketplaceSection)
     cli: CLISection = Field(default_factory=CLISection)
+    llm: LLMSection = Field(default_factory=LLMSection)
+    workspace: WorkspaceSection = Field(default_factory=WorkspaceSection)
+    websearch: WebSearchSection = Field(default_factory=WebSearchSection)
 
     def to_toml(self) -> str:
         """Render the config to a TOML string for round-tripping."""
@@ -449,13 +524,17 @@ def get_config() -> OpenSwarmConfig:
 
 
 def reset_config_for_tests(**overrides: Any) -> OpenSwarmConfig:
-    """Rebuild the config singleton with overrides (test-only)."""
+    """Rebuild the config singleton with overrides (test-only).
+
+    Ignores on-disk TOML so local ``config/openswarm.toml`` does not
+    leak into the test suite.
+    """
     global _config
-    base = load_config()
-    merged = base.model_copy(deep=True)
+    merged = OpenSwarmConfig(_env_file=None)  # type: ignore[call-arg]
     if overrides:
-        _deep_merge(merged.model_dump(), overrides)
-        merged = OpenSwarmConfig.model_validate(merged.model_dump())
+        data = merged.model_dump()
+        _deep_merge(data, overrides)
+        merged = OpenSwarmConfig.model_validate(data)
     _config = merged
     return _config
 
@@ -466,12 +545,16 @@ __all__ = [
     "CLISection",
     "DashboardSection",
     "KernelSection",
+    "LLMRoute",
+    "LLMSection",
     "MarketplaceSection",
     "OpenSwarmConfig",
     "PROJECT_ROOT",
     "RedisSection",
     "TelegramSection",
+    "WebSearchSection",
     "WorkersSection",
+    "WorkspaceSection",
     "get_config",
     "load_config",
     "reset_config_for_tests",

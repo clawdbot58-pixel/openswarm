@@ -318,32 +318,81 @@ function renderAgentGraph(){
   }
 
   const cx = canvas.width/2, cy = canvas.height/2;
-  const radius = Math.min(cx,cy) * 0.6;
+  const outerR = Math.min(cx,cy) * 0.62;
+  const innerR = Math.min(cx,cy) * 0.32;
   const existing = new Map(graphNodes.map(n=>[n.id,n]));
-  graphNodes = agents.map((a,i)=>{
-    const angle = (2*Math.PI*i/agents.length) - Math.PI/2;
+
+  const mainAgent = agents.find(a => a.agent_id === 'main-agent')
+    || agents.find(a => (a.role||'').includes('orchestrator') && a.agent_id.includes('main'))
+    || agents.find(a => (a.role||'') === 'orchestrator')
+    || agents[0];
+  const conductor = agents.find(a => a.agent_id === 'conductor')
+    || agents.find(a => a.agent_id !== mainAgent?.agent_id && (a.role||'') === 'orchestrator');
+  const workers = agents.filter(a =>
+    a.agent_id !== mainAgent?.agent_id && a.agent_id !== conductor?.agent_id
+  );
+
+  graphNodes = [];
+  if(mainAgent){
+    const ex = existing.get(mainAgent.agent_id);
+    graphNodes.push({
+      id: mainAgent.agent_id,
+      label: mainAgent.human_readable_name || mainAgent.agent_id,
+      role: mainAgent.role || '',
+      status: mainAgent.status || 'ready',
+      category: mainAgent.category || '',
+      x: ex?.x ?? cx,
+      y: ex?.y ?? cy,
+      vx: 0, vy: 0,
+      task: mainAgent.current_task || '',
+      tier: 'main'
+    });
+  }
+  if(conductor){
+    const ex = existing.get(conductor.agent_id);
+    graphNodes.push({
+      id: conductor.agent_id,
+      label: conductor.human_readable_name || conductor.agent_id,
+      role: conductor.role || '',
+      status: conductor.status || 'ready',
+      category: conductor.category || '',
+      x: ex?.x ?? cx,
+      y: ex?.y ?? cy - innerR,
+      vx: 0, vy: 0,
+      task: conductor.current_task || '',
+      tier: 'conductor'
+    });
+  }
+  workers.forEach((a,i)=>{
+    const angle = (2*Math.PI*i/Math.max(workers.length,1)) - Math.PI/2;
     const ex = existing.get(a.agent_id);
-    return {
+    graphNodes.push({
       id: a.agent_id,
       label: a.human_readable_name || a.agent_id,
       role: a.role || '',
       status: a.status || 'ready',
       category: a.category || '',
-      x: ex?.x ?? cx + radius*Math.cos(angle),
-      y: ex?.y ?? cy + radius*Math.sin(angle),
+      x: ex?.x ?? cx + outerR*Math.cos(angle),
+      y: ex?.y ?? cy + outerR*Math.sin(angle),
       vx: 0, vy: 0,
-      task: a.current_task || ''
-    };
+      task: a.current_task || '',
+      tier: 'worker'
+    });
   });
 
+  const idx = id => graphNodes.findIndex(n => n.id === id);
   graphEdges = [];
-  for(let i=0;i<agents.length;i++){
-    for(let j=i+1;j<agents.length;j++){
-      if(agents[i].role === 'orchestrator' || agents[j].role === 'orchestrator' || agents[i].category === agents[j].category){
-        graphEdges.push({from:i,to:j});
-      }
-    }
+  const mainIdx = mainAgent ? idx(mainAgent.agent_id) : -1;
+  const condIdx = conductor ? idx(conductor.agent_id) : -1;
+  if(mainIdx >= 0 && condIdx >= 0){
+    graphEdges.push({from: mainIdx, to: condIdx});
   }
+  workers.forEach(w => {
+    const wIdx = idx(w.agent_id);
+    if(wIdx < 0) return;
+    if(mainIdx >= 0) graphEdges.push({from: mainIdx, to: wIdx});
+    if(condIdx >= 0 && wIdx !== condIdx) graphEdges.push({from: condIdx, to: wIdx});
+  });
 
   drawGraph();
 }

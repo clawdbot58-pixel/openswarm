@@ -449,6 +449,260 @@ async def submit_goal(
     )
 
 
+@router.get("/workflows", response_model=list[WorkflowStatusResponse])
+async def list_workflows(
+    request: Request,
+    status_filter: str | None = None,
+) -> list[WorkflowStatusResponse]:
+    """List all workflows in the in-memory store."""
+    store = _workflows_store(request)
+    out: list[WorkflowStatusResponse] = []
+    for record in store.values():
+        if status_filter and record.get("status") != status_filter:
+            continue
+        out.append(
+            WorkflowStatusResponse(
+                workflow_id=record["workflow_id"],
+                status=record["status"],
+                goal=record["goal"],
+                submitted_at=record["submitted_at"],
+                updated_at=record["updated_at"],
+                result=record.get("result"),
+                error=record.get("error"),
+            )
+        )
+    out.sort(key=lambda w: w.updated_at, reverse=True)
+    return out
+
+
+class UpdateWorkflowRequest(BaseModel):
+    """Body of ``PATCH /workflows/{id}``."""
+
+    status: str | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+@router.patch("/workflows/{workflow_id}", response_model=WorkflowStatusResponse)
+async def update_workflow(
+    request: Request,
+    workflow_id: str,
+    body: UpdateWorkflowRequest,
+) -> WorkflowStatusResponse:
+    """Update workflow status (used by main agent / conductor)."""
+    store = _workflows_store(request)
+    record = store.get(workflow_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorResponse(
+                code="workflow_not_found",
+                message=f"no workflow with id {workflow_id!r}",
+                details={"workflow_id": workflow_id},
+            ).model_dump(),
+        )
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    if body.status is not None:
+        record["status"] = body.status
+    if body.result is not None:
+        record["result"] = body.result
+    if body.error is not None:
+        record["error"] = body.error
+    record["updated_at"] = now
+    return WorkflowStatusResponse(
+        workflow_id=record["workflow_id"],
+        status=record["status"],
+        goal=record["goal"],
+        submitted_at=record["submitted_at"],
+        updated_at=record["updated_at"],
+        result=record.get("result"),
+        error=record.get("error"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chat (conversational Telegram / CLI)
+# ---------------------------------------------------------------------------
+
+
+class ChatRequest(BaseModel):
+    """Body of ``POST /chat`` — synchronous conversation turn."""
+
+    message: str = Field(..., min_length=1)
+    session_id: str | None = Field(
+        default=None,
+        description="Stable session id (e.g. Telegram chat id) for steering",
+    )
+    timeout_seconds: float = Field(default=120.0, ge=5.0, le=300.0)
+
+
+class ChatSteerRequest(BaseModel):
+    """Body of ``POST /chat/{id}/steer`` — Hermes-style mid-flight steering."""
+
+    message: str = Field(..., min_length=1)
+
+
+class ChatResponse(BaseModel):
+    """Reply from the main agent."""
+
+    chat_id: str
+    session_id: str
+    reply: str
+    status: str
+    steered: bool = False
+
+
+class ChatCompleteRequest(BaseModel):
+    """Internal callback from the main agent."""
+
+    reply: str
+    error: str | None = None
+
+
+def _chat_store(request: Request):
+    store = getattr(request.app.state, "chat_store", None)
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=ErrorResponse(
+                code="chat_unavailable",
+                message="chat store not initialised",
+            ).model_dump(),
+        )
+    return store
+
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat_turn(request: Request, body: ChatRequest) -> ChatResponse:
+    """Send a message and wait for the main agent's reply.
+
+    Hermes-style steering: if the same ``session_id`` already has a
+    pending turn, the new message is appended as steering instead of
+    starting a second turn.
+    """
+    store = _chat_store(request)
+    message = body.message.strip()
+    session_id = body.session_id or str(_uuid.uuid4())
+
+    active = store.find_active_for_session(session_id)
+    if active is not None:
+        store.add_steering(active.chat_id, message)
+        return ChatResponse(
+            chat_id=active.chat_id,
+            session_id=session_id,
+            reply="Got it — I'll factor that into my reply.",
+            status="steered",
+            steered=True,
+        )
+
+    session = store.create(message, session_id=session_id)
+    bus = _bus(request)
+    env = Envelope(
+        envelope_id=str(_uuid.uuid4()),
+        created_at=datetime.now(timezone.utc),
+        envelope_type="intent",
+        sender=Endpoint(agent_id="chat", role="external"),
+        receiver=Endpoint(agent_id=_main_agent_id(request), role="orchestrator"),
+        preamble=Preamble(intent={"goal": "user_message", "phase": "conversation"}),
+        payload={
+            "content_type": "data",
+            "data": {
+                "chat_id": session.chat_id,
+                "session_id": session_id,
+                "goal": message,
+            },
+        },
+        metadata=EnvelopeMetadata(priority=10),
+    )
+    try:
+        await bus.send(env)
+    except Exception as exc:  # noqa: BLE001
+        store.complete(session.chat_id, "", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=ErrorResponse(
+                code="main_agent_unreachable",
+                message="Could not reach the main agent. Run `openswarm start`.",
+            ).model_dump(),
+        ) from exc
+
+    store.mark_running(session.chat_id)
+    finished = await store.wait(session.chat_id, timeout=body.timeout_seconds)
+    return ChatResponse(
+        chat_id=finished.chat_id,
+        session_id=finished.session_id,
+        reply=finished.reply or finished.error or "(no reply)",
+        status=finished.status,
+    )
+
+
+@router.post("/chat/{chat_id}/steer")
+async def chat_steer(
+    request: Request, chat_id: str, body: ChatSteerRequest
+) -> dict[str, Any]:
+    """Append a steering message to an in-flight chat turn."""
+    store = _chat_store(request)
+    ok = store.add_steering(chat_id, body.message)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorResponse(
+                code="chat_not_active",
+                message=f"no active chat turn for id {chat_id!r}",
+            ).model_dump(),
+        )
+    return {"chat_id": chat_id, "steered": True}
+
+
+@router.post("/chat/{chat_id}/complete")
+async def chat_complete(
+    request: Request, chat_id: str, body: ChatCompleteRequest
+) -> dict[str, str]:
+    """Main agent callback — deliver the conversational reply."""
+    store = _chat_store(request)
+    store.complete(chat_id, body.reply, error=body.error)
+    return {"chat_id": chat_id, "status": "complete"}
+
+
+@router.post("/chat/{chat_id}/steering/consume")
+async def chat_consume_steering(
+    request: Request, chat_id: str
+) -> dict[str, Any]:
+    """Return and clear steering messages for an in-flight chat turn."""
+    store = _chat_store(request)
+    session = store.get(chat_id)
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorResponse(
+                code="chat_not_found",
+                message=f"no chat with id {chat_id!r}",
+            ).model_dump(),
+        )
+    return {"chat_id": chat_id, "steering": store.consume_steering(chat_id)}
+
+
+@router.get("/chat/{chat_id}")
+async def get_chat(request: Request, chat_id: str) -> dict[str, Any]:
+    """Inspect a chat turn (steering buffer for the main agent)."""
+    store = _chat_store(request)
+    session = store.get(chat_id)
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorResponse(
+                code="chat_not_found",
+                message=f"no chat with id {chat_id!r}",
+            ).model_dump(),
+        )
+    return {
+        "chat_id": session.chat_id,
+        "session_id": session.session_id,
+        "status": session.status,
+        "steering": list(session.steering),
+    }
+
+
 @router.get("/workflows/{workflow_id}", response_model=WorkflowStatusResponse)
 async def get_workflow(
     request: Request, workflow_id: str

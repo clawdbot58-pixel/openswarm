@@ -105,6 +105,18 @@ def _check_kernel_reachable(url: str) -> bool:
         return False
 
 
+def _resolve_kernel_url(cfg: OpenSwarmConfig, pm: ProcessManager | None) -> str:
+    """Prefer the live kernel URL from ``data/state.json`` over config defaults."""
+    if pm is not None and pm.state_file.is_file():
+        try:
+            data = json.loads(pm.state_file.read_text(encoding="utf-8"))
+            if data.get("kernel_url"):
+                return str(data["kernel_url"]).rstrip("/")
+        except (OSError, json.JSONDecodeError):
+            pass
+    return f"http://127.0.0.1:{cfg.kernel.port}"
+
+
 # ---------------------------------------------------------------------------
 # Click group
 # ---------------------------------------------------------------------------
@@ -505,7 +517,8 @@ def run(
         error(console, "No goal provided. Usage: openswarm run 'Build a login page'")
         sys.exit(2)
 
-    kernel_url = f"http://127.0.0.1:{cfg.kernel.port}"
+    pm = _resolve_manager(ctx)
+    kernel_url = _resolve_kernel_url(cfg, pm)
     if not _check_kernel_reachable(f"{kernel_url}/health"):
         error(console, "Kernel not running. Run `openswarm start`.")
         sys.exit(1)

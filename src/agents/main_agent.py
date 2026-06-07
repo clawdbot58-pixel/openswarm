@@ -378,10 +378,205 @@ class MainAgent(BaseAgent):
         if env_type == "response":
             await self._on_conductor_response(envelope)
             return
+        if env_type == "intent":
+            await self._on_intent(envelope)
+            return
         logger.debug(
             "main-agent received envelope type=%s from %s",
             env_type, sender,
         )
+
+    async def _on_intent(self, envelope: Any) -> None:
+        """Handle ``intent`` envelopes — chat turns and legacy goal API."""
+        try:
+            data = envelope.payload.data  # type: ignore[attr-defined]
+        except AttributeError:
+            return
+        if not isinstance(data, dict):
+            return
+
+        chat_id = str(data.get("chat_id") or "")
+        goal = str(data.get("goal") or "").strip()
+        workflow_id = str(data.get("workflow_id") or "")
+
+        if chat_id:
+            reply = await self._handle_chat_turn(goal, chat_id)
+            late = await self._consume_steering(chat_id)
+            text = reply.text
+            if late:
+                text = text.rstrip() + "\n\n(Noted: " + "; ".join(late) + ")"
+            await self._complete_chat(chat_id, text, error=None)
+            return
+
+        if not goal:
+            return
+        if workflow_id:
+            await self._patch_workflow(workflow_id, status="running")
+        reply = await self.handle_user_message(goal)
+        if workflow_id:
+            if reply.is_error:
+                await self._patch_workflow(
+                    workflow_id, status="failed", error=reply.text
+                )
+            else:
+                await self._patch_workflow(
+                    workflow_id,
+                    status="completed",
+                    result={"reply": reply.text, "envelope_id": reply.sent_envelope_id},
+                )
+
+    async def _consume_steering(self, chat_id: str) -> list[str]:
+        import json
+        import urllib.request
+
+        body = b"{}"
+        req = urllib.request.Request(  # noqa: S310
+            f"{self._kernel_rest_url}/chat/{chat_id}/steering/consume",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._http_timeout) as resp:  # noqa: S310
+                data = json.loads(resp.read().decode("utf-8"))
+                return list(data.get("steering") or [])
+        except Exception:  # noqa: BLE001
+            return []
+
+    async def _handle_chat_turn(self, text: str, chat_id: str) -> UserReply:
+        """Conversational Telegram/CLI turn — reply directly, steer on follow-ups."""
+        steering = await self._consume_steering(chat_id)
+        if steering:
+            text = (
+                text
+                + "\n\n(User steering while you work:\n"
+                + "\n".join(f"- {s}" for s in steering)
+                + ")"
+            )
+        try:
+            parsed = await self._parse(text)
+        except LLMError as exc:
+            logger.warning("LLM parse failed entirely: %s", exc)
+            parsed = ObjectiveParseResult(
+                objective=parse_objective_heuristic(text),
+                source="heuristic",
+            )
+        objective = parsed.objective
+        async with self._obj_lock:
+            self._recent_objectives[objective.objective_id] = objective
+        if objective.is_cancellation:
+            return await self._handle_cancellation(objective)
+        if objective.is_status_query:
+            return await self._handle_status_query(objective)
+        if self._is_conversational_chat(text, objective):
+            return await self._conversational_reply(text)
+        if objective.confidence < self._objective_min_confidence:
+            return await self._conversational_reply(text)
+        reply = await self._dispatch_objective(objective, parsed)
+        # Strip markdown bold — Telegram plain-text channel.
+        plain = reply.text.replace("**", "").replace("`", "")
+        return UserReply(
+            text=plain,
+            objective=reply.objective,
+            sent_envelope_id=reply.sent_envelope_id,
+            is_error=False,
+        )
+
+    @staticmethod
+    def _is_conversational_chat(text: str, objective: StructuredObjective) -> bool:
+        lower = text.lower().strip().rstrip("!?.")
+        greetings = {
+            "hi", "hello", "hey", "yo", "howdy", "hiya",
+            "thanks", "thank you", "good morning", "good evening",
+        }
+        if lower in greetings:
+            return True
+        if len(text.split()) <= 3 and not objective.suggested_sectors:
+            return True
+        return False
+
+    async def _conversational_reply(self, text: str) -> UserReply:
+        if self._llm is None:
+            return UserReply(
+                text=(
+                    "Hey! I'm OpenSwarm — your multi-agent orchestrator. "
+                    "Tell me what you'd like built, researched, or reviewed."
+                ),
+                is_error=False,
+            )
+        try:
+            result = await self._llm.complete_text(
+                system=(
+                    "You are OpenSwarm, a friendly multi-agent orchestrator. "
+                    "Reply in 1-3 short sentences. Be warm and direct. "
+                    "If the user greets you, greet back and invite a task. "
+                    "You always get the last word — end with something helpful."
+                ),
+                user=text,
+                temperature=0.4,
+                max_tokens=256,
+            )
+            reply = (result.text or "").strip()
+            if reply:
+                return UserReply(text=reply, is_error=False)
+        except LLMError as exc:
+            logger.warning("conversational LLM failed: %s", exc)
+        return UserReply(
+            text="I'm here — what would you like me to work on?",
+            is_error=False,
+        )
+
+    async def _complete_chat(
+        self, chat_id: str, reply: str, *, error: str | None = None
+    ) -> None:
+        import json
+        import urllib.error
+        import urllib.request
+
+        body: dict[str, Any] = {"reply": reply}
+        if error:
+            body["error"] = error
+        req = urllib.request.Request(  # noqa: S310
+            f"{self._kernel_rest_url}/chat/{chat_id}/complete",
+            data=json.dumps(body).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._http_timeout):  # noqa: S310
+                pass
+        except (urllib.error.URLError, OSError, urllib.error.HTTPError) as exc:
+            logger.warning("chat complete failed for %s: %s", chat_id, exc)
+
+    async def _patch_workflow(
+        self,
+        workflow_id: str,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Best-effort workflow status update via kernel REST."""
+        import json
+        import urllib.error
+        import urllib.request
+
+        body: dict[str, Any] = {"status": status}
+        if result is not None:
+            body["result"] = result
+        if error is not None:
+            body["error"] = error
+        req = urllib.request.Request(  # noqa: S310
+            f"{self._kernel_rest_url}/workflows/{workflow_id}",
+            data=json.dumps(body).encode("utf-8"),
+            method="PATCH",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._http_timeout):  # noqa: S310
+                pass
+        except (urllib.error.URLError, OSError, urllib.error.HTTPError) as exc:
+            logger.debug("workflow patch failed for %s: %s", workflow_id, exc)
 
     async def on_event(self, event_name: str, details: dict[str, Any]) -> None:  # type: ignore[override]
         """Handle a kernel-emitted event.
@@ -517,12 +712,10 @@ class MainAgent(BaseAgent):
             )
         sectors = ", ".join(f"`{s}`" for s in objective.suggested_sectors) or "(none)"
         text = (
-            f"Understood. Goal: **{objective.goal}**\n"
-            f"- Primary sector: `{objective.primary_sector}`\n"
-            f"- Suggested sectors: {sectors}\n"
-            f"- Confidence: {objective.confidence:.2f}\n"
-            f"- Approval required: `{objective.needs_approval}`\n\n"
-            f"Dispatching to the Conductor for workflow setup."
+            f"On it — **{objective.goal}**\n\n"
+            f"I'll spin up the swarm"
+            + (f" ({sectors})" if sectors != "(none)" else "")
+            + ". You'll see progress on the dashboard."
         )
         return await self._surface(
             UserReply(
@@ -1112,17 +1305,23 @@ async def run_daemon() -> None:
         level=os.environ.get("OPENSWARM_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    from agents.llm_setup import build_llm_client_from_section
+    from config import get_config
+
+    cfg = get_config()
     manifest_path = os.environ.get("MAIN_AGENT_MANIFEST_PATH", "manifests/main-agent.json")
     ws_url = os.environ.get("KERNEL_WS", "ws://127.0.0.1:8765/ws")
     kernel_rest_url = os.environ.get("KERNEL_REST_URL", "http://127.0.0.1:8765")
 
+    llm = build_llm_client_from_section(cfg.llm)
     agent = MainAgent(
         load_main_agent_manifest(manifest_path),
+        llm=llm,
         ws_url=ws_url,
         kernel_rest_url=kernel_rest_url,
     )
     await agent.start()
-    logger.info("main agent connected to %s", ws_url)
+    logger.info("main agent connected to %s (llm profile=%s)", ws_url, cfg.llm.profile)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

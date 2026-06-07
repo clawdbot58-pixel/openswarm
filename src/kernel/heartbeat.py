@@ -250,8 +250,8 @@ class HeartbeatMonitor:
     ) -> None:
         """Update the registry from a WebSocket-borne heartbeat envelope.
 
-        Validates that the agent is registered; otherwise this is a no-op
-        (the agent should send a registration envelope first).
+        Also writes the heartbeat file so the file-based monitor stays
+        in sync (agents only use WS heartbeats in production).
         """
         try:
             await self._registry.get_status(agent_id)
@@ -259,13 +259,26 @@ class HeartbeatMonitor:
             return
         ts = timestamp or datetime.now(timezone.utc)
         await self._registry.update_heartbeat(agent_id, ts)
-        # Also clear any zombie flag.
         try:
             current = await self._registry.get_status(agent_id)
-            if current["status"] == "zombie":
+            status = current.get("status") or "ready"
+            if status == "zombie":
+                status = "ready"
                 await self._registry.update_status(agent_id, "ready")
         except Exception:  # noqa: BLE001
-            return
+            status = "ready"
+        try:
+            hb = HeartbeatFile(
+                agent_id=agent_id,
+                timestamp=ts,
+                status=status if status in {"ready", "busy", "idle"} else "ready",
+            )
+            path = self._dir / f"{agent_id}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(hb.model_dump_json(), encoding="utf-8")
+            self._last_seen_mtime[agent_id] = path.stat().st_mtime
+        except OSError:
+            logger.debug("failed to write heartbeat file for %s", agent_id)
 
 
 __all__ = ["HeartbeatMonitor"]

@@ -1,0 +1,23 @@
+# User preferences (optional). Copy to config/user.yaml
+user:
+  name: "You"
+  default_workspace: "agent"
+
+agents:
+  enabled:
+    - planner
+    - coder
+    - reviewer
+  default: "coder"
+
+notifications:
+  on_complete: true
+  on_error: true
+
+privacy:
+  web_search: true
+
+# API keys can also live in .env (recommended)
+api_keys:
+  exa: ""
+  telegram: ""
